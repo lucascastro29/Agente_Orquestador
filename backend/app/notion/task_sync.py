@@ -1,4 +1,5 @@
 """Integración con Notion para leer y actualizar tareas etiquetadas."""
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -26,7 +27,17 @@ def _headers() -> dict:
     }
 
 
+def _normalize(name: str) -> str:
+    """Normaliza nombre de tablero: lower, elimina espacios alrededor de / y colapsa espacios."""
+    n = re.sub(r'\s*([/\\])\s*', r'\1', name)
+    return " ".join(n.lower().split())
+
+
 class NotionTaskSync:
+
+    def _is_allowed_board(self, board: str) -> bool:
+        norm = _normalize(board)
+        return any(_normalize(b) == norm for b in settings.notion_watched_boards)
 
     async def _search_database(self, board_name: str) -> str | None:
         """Encuentra el ID de una base de datos Notion por nombre."""
@@ -41,13 +52,13 @@ class NotionTaskSync:
             for r in results:
                 title_parts = r.get("title", [])
                 title = "".join(p.get("plain_text", "") for p in title_parts)
-                if title.strip().lower() == board_name.strip().lower():
+                if _normalize(title) == _normalize(board_name):
                     return r["id"]
         return None
 
     async def get_tasks_by_label(self, board: str, label: str) -> list[NotionTask]:
         """Lee tareas de un tablero filtradas por etiqueta."""
-        if board not in settings.notion_watched_boards:
+        if not self._is_allowed_board(board):
             raise PermissionError(f"Tablero '{board}' no está en NOTION_WATCHED_BOARDS")
 
         db_id = await self._search_database(board)
@@ -152,7 +163,7 @@ class NotionTaskSync:
 
     async def list_database_items(self, board: str, page_size: int = 50) -> list[dict]:
         """Lista todos los items de una base de datos sin filtro de etiqueta."""
-        if board not in settings.notion_watched_boards:
+        if not self._is_allowed_board(board):
             raise PermissionError(f"Tablero '{board}' no está en NOTION_WATCHED_BOARDS")
 
         db_id = await self._search_database(board)
@@ -213,10 +224,18 @@ class NotionTaskSync:
 
 
 def _extract_title(props: dict) -> str:
-    for key in ("Name", "Nombre", "Title", "Título"):
-        if key in props:
+    # Primero buscar por nombres conocidos
+    for key in ("Name", "Nombre", "Title", "Título", "Tarea", "Task"):
+        if key in props and props[key].get("type") == "title":
             parts = props[key].get("title", [])
             return "".join(p.get("plain_text", "") for p in parts)
+    # Fallback: buscar cualquier propiedad de tipo title
+    for prop in props.values():
+        if prop.get("type") == "title":
+            parts = prop.get("title", [])
+            text = "".join(p.get("plain_text", "") for p in parts)
+            if text:
+                return text
     return "(sin título)"
 
 
