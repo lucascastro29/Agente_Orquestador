@@ -13,7 +13,7 @@ FASE 0: [x] Infra Docker local
 FASE 1: [x] Backend core + orquestador + Telegram
 FASE 2: [x] Router inteligente
 FASE 3: [x] Web UI
-FASE 4: [ ] Notion como fuente de tareas
+FASE 4: [x] Notion como fuente de tareas
 FASE 5: [ ] Sub-agentes especializados
 FASE 6: [ ] Gmail + Calendar + Watchers
 FASE 7: [ ] Claude Code bridge

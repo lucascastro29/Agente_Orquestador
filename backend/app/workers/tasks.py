@@ -1,0 +1,118 @@
+"""Celery tasks para ejecutar Claude Code en background."""
+import asyncio
+import subprocess
+from datetime import datetime, timezone
+
+from app.worker import celery_app
+
+
+def _run_sync(coro):
+    """Ejecuta una coroutine desde contexto síncrono (Celery worker)."""
+    return asyncio.run(coro)
+
+
+async def _update_worker(worker_id: str, **kwargs):
+    from app.db.session import AsyncSessionLocal
+    from app.workers.manager import WorkerManager
+    async with AsyncSessionLocal() as db:
+        mgr = WorkerManager(db)
+        await mgr.update_status(worker_id, kwargs.pop("status"), **kwargs)
+
+
+async def _append_output(worker_id: str, chunk: str):
+    from app.db.session import AsyncSessionLocal
+    from app.workers.manager import WorkerManager
+    async with AsyncSessionLocal() as db:
+        mgr = WorkerManager(db)
+        await mgr.append_output(worker_id, chunk)
+
+
+async def _notify_telegram(session_id: str, text: str):
+    """Notifica al usuario por Telegram si la sesión tiene chat_id asociado."""
+    from app.db.session import AsyncSessionLocal
+    from app.db.models import Session as DBSession
+    from sqlalchemy import select
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(DBSession).where(DBSession.id == session_id))
+        session = result.scalar_one_or_none()
+        if session and session.channel == "telegram" and session.external_chat_id:
+            from app.telegram.client import send_message
+            await send_message(session.external_chat_id, text)
+
+
+async def _sync_notion_complete(notion_task_id: str, result_summary: str, cost_usd: float):
+    from app.notion.task_sync import NotionTaskSync
+    sync = NotionTaskSync()
+    try:
+        await sync.complete_task(notion_task_id, result_summary, cost_usd)
+    except Exception as exc:
+        print(f"[notion] Error al completar tarea {notion_task_id}: {exc}")
+
+
+@celery_app.task(name="workers.execute_claude_code", bind=True)
+def execute_claude_code(self, worker_id: str, prompt: str, working_dir: str):
+    _run_sync(_execute_claude_code_async(worker_id, prompt, working_dir))
+
+
+async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: str):
+    from app.db.session import AsyncSessionLocal
+    from app.workers.manager import WorkerManager
+
+    # Recuperar datos del worker
+    async with AsyncSessionLocal() as db:
+        mgr = WorkerManager(db)
+        worker = await mgr.get_by_id(worker_id)
+        if not worker:
+            return
+        notion_task_id = worker.notion_task_id
+        session_id = worker.session_id
+
+    await _update_worker(worker_id, status="running")
+
+    try:
+        proc = subprocess.run(
+            ["claude", "--print", "--no-streaming", prompt],
+            cwd=working_dir,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+        output = proc.stdout or ""
+        stderr = proc.stderr or ""
+        if stderr:
+            output += f"\n\n[stderr]\n{stderr}"
+
+        success = proc.returncode == 0
+        result_summary = output[:500] if output else "(sin output)"
+
+        await _update_worker(
+            worker_id,
+            status="done" if success else "failed",
+            output=output,
+            result_summary=result_summary,
+            error=None if success else f"returncode={proc.returncode}",
+        )
+
+        # Actualizar Notion si aplica
+        if notion_task_id:
+            await _sync_notion_complete(notion_task_id, result_summary, cost_usd=0.0)
+
+        # Notificar al usuario
+        icon = "✅" if success else "❌"
+        msg = f"{icon} Worker terminó\n\n<b>Prompt:</b> {prompt[:100]}…\n\n<b>Resultado:</b> {result_summary[:300]}"
+        await _notify_telegram(session_id, msg)
+
+    except subprocess.TimeoutExpired:
+        await _update_worker(worker_id, status="failed", error="Timeout (30 min)")
+        await _notify_telegram(session_id, f"⏱ Worker {worker_id[:8]} cancelado por timeout.")
+    except FileNotFoundError:
+        # claude CLI no instalado — marcar failed con mensaje claro
+        await _update_worker(
+            worker_id,
+            status="failed",
+            error="claude CLI no encontrado en PATH. Instalá Claude Code en el container.",
+        )
+        await _notify_telegram(session_id, f"⚠️ Worker {worker_id[:8]} falló: claude CLI no disponible en este entorno.")
+    except Exception as exc:
+        await _update_worker(worker_id, status="failed", error=str(exc))
+        await _notify_telegram(session_id, f"❌ Worker {worker_id[:8]} falló: {exc}")

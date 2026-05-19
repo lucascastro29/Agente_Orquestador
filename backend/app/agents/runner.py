@@ -40,6 +40,9 @@ class AgentRunner:
         self.memory_svc = MemoryService(db)
         self.cost_tracker = CostTracker(db)
         self.security = SecurityValidator(db)
+        # Importación lazy para evitar ciclo circular
+        from app.workers.manager import WorkerManager
+        self.worker_mgr = WorkerManager(db)
 
     async def run(
         self,
@@ -215,12 +218,32 @@ class AgentRunner:
         messages = list(prior_messages)
         messages.append({"role": "user", "content": message})
 
-        response = await self.client.messages.create(
+        # Incluir tools del dominio si las hay (permite get_workers_status en consulta_simple)
+        tools = registry.to_anthropic_tools(ctx.tools) if ctx.tools else []
+
+        create_kwargs: dict[str, Any] = dict(
             model=model,
             max_tokens=1024,
             system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
             messages=messages,
         )
+        if tools:
+            create_kwargs["tools"] = tools
+
+        # Si hay tools, usar el loop completo para manejar tool_use
+        if tools:
+            agent = self._build_filtered_agent(route)
+            agent.model = model
+            agent.max_tokens = 1024
+            return await self.run(
+                agent=agent,
+                session_id=session_id,
+                prior_messages=prior_messages,
+                user_message=message,
+                channel=channel,
+            )
+
+        response = await self.client.messages.create(**create_kwargs)
 
         text = "".join(b.text for b in response.content if hasattr(b, "text"))
         turn_cost = self.cost_tracker.calculate(model, response.usage)
@@ -530,9 +553,14 @@ class AgentRunner:
         output = None
 
         try:
-            # Inyectar memory_service para tools de memoria
+            # Inyectar dependencias según la tool
             if block.name in ("get_memoria", "update_memoria", "delete_memoria", "search_memoria"):
                 output = await tool.handler(self.memory_svc, **block.input)
+            elif block.name in ("run_claude_code", "get_workers_status", "cancel_worker"):
+                output = await tool.handler(self.worker_mgr, **{
+                    **block.input,
+                    **({"session_id": session_id} if block.name == "run_claude_code" and "session_id" not in block.input else {}),
+                })
             else:
                 output = await tool.handler(**block.input)
 

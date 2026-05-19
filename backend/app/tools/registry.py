@@ -134,3 +134,119 @@ registry.register(LocalTool(
     handler=_handle_search_memoria,
     requires_confirmation=False,
 ))
+
+
+# --- Tools de workers y Notion (Fase 4) ---
+
+async def _handle_run_claude_code(
+    worker_manager: Any,
+    session_id: str,
+    prompt: str,
+    working_dir: str,
+    mode: str = "background",
+    notify_on_done: bool = True,
+    notion_task_id: str | None = None,
+) -> dict:
+    worker = await worker_manager.create(
+        agent_id="orchestrator",
+        session_id=session_id,
+        type="claude_code",
+        prompt=prompt,
+        working_dir=working_dir,
+        notion_task_id=notion_task_id,
+    )
+    # Despachar tarea Celery
+    from app.workers.tasks import execute_claude_code
+    execute_claude_code.delay(worker.id, prompt, working_dir)
+    return {"worker_id": worker.id, "status": "pending", "mode": mode}
+
+
+async def _handle_get_workers_status(worker_manager: Any) -> dict:
+    workers = await worker_manager.get_active()
+    return {
+        "active_workers": [
+            {
+                "id": w.id,
+                "status": w.status,
+                "type": w.type,
+                "prompt": w.prompt[:80],
+                "working_dir": w.working_dir,
+                "started_at": w.started_at.isoformat() if w.started_at else None,
+            }
+            for w in workers
+        ]
+    }
+
+
+async def _handle_cancel_worker(worker_manager: Any, worker_id: str) -> dict:
+    cancelled = await worker_manager.cancel(worker_id)
+    return {"ok": cancelled, "worker_id": worker_id}
+
+
+async def _handle_get_notion_tasks(board: str, label: str = "CLAUDE CODE") -> dict:
+    from app.notion.task_sync import NotionTaskSync
+    sync = NotionTaskSync()
+    tasks = await sync.get_tasks_by_label(board, label)
+    return {
+        "tasks": [
+            {"id": t.id, "title": t.title, "status": t.status, "url": t.url}
+            for t in tasks
+        ]
+    }
+
+
+registry.register(LocalTool(
+    name="run_claude_code",
+    description=(
+        "Lanza una Claude Code session en background para ejecutar una tarea técnica. "
+        "Siempre requiere working_dir dentro de ALLOWED_WORKING_DIRS."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "prompt":         {"type": "string", "description": "Instrucción completa para Claude Code."},
+            "working_dir":    {"type": "string", "description": "Directorio de trabajo absoluto."},
+            "mode":           {"type": "string", "enum": ["background", "sync"], "default": "background"},
+            "notify_on_done": {"type": "boolean", "default": True},
+            "notion_task_id": {"type": "string"},
+        },
+        "required": ["prompt", "working_dir"],
+    },
+    handler=_handle_run_claude_code,
+    requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="get_workers_status",
+    description="Devuelve el estado de todos los workers activos (pending, running, waiting_input).",
+    input_schema={"type": "object", "properties": {}},
+    handler=_handle_get_workers_status,
+    requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="cancel_worker",
+    description="Cancela un worker en curso.",
+    input_schema={
+        "type": "object",
+        "properties": {"worker_id": {"type": "string"}},
+        "required": ["worker_id"],
+    },
+    handler=_handle_cancel_worker,
+    requires_confirmation=True,
+))
+
+registry.register(LocalTool(
+    name="notion_get_tasks",
+    description="Lee tareas de un tablero de Notion filtradas por etiqueta.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "board": {"type": "string", "description": "Nombre exacto del tablero en NOTION_WATCHED_BOARDS."},
+            "label": {"type": "string", "default": "CLAUDE CODE", "description": "Etiqueta a filtrar."},
+        },
+        "required": ["board"],
+    },
+    handler=_handle_get_notion_tasks,
+    requires_confirmation=False,
+))

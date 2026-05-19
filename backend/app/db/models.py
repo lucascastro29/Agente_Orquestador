@@ -107,3 +107,28 @@ class SecurityEvent(Base):
     action_taken: Mapped[str] = mapped_column(String, nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class Worker(Base):
+    __tablename__ = "workers"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    parent_id: Mapped[str | None] = mapped_column(String, ForeignKey("workers.id"), nullable=True)
+    agent_id: Mapped[str] = mapped_column(String, nullable=False)
+    session_id: Mapped[str] = mapped_column(String, ForeignKey("sessions.id"), nullable=False)
+    type: Mapped[str] = mapped_column(String, nullable=False)          # "claude_code"|"subagent"
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    # pending|running|waiting_input|done|failed|cancelled
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    working_dir: Mapped[str | None] = mapped_column(String, nullable=True)
+    output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    notion_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notified: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

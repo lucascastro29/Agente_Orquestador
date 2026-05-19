@@ -80,3 +80,22 @@ class SecurityEventOut(BaseModel):
     action_taken: str
     resolved: bool
     created_at: datetime
+
+
+class WorkerOut(BaseModel):
+    id: str
+    parent_id: str | None
+    agent_id: str
+    session_id: str
+    type: str
+    status: str
+    prompt: str
+    working_dir: str | None
+    result_summary: str | None
+    cost_usd: float
+    notion_task_id: str | None
+    error: str | None
+    notified: bool
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None

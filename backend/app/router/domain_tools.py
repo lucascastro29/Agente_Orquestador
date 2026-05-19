@@ -10,7 +10,7 @@ class DomainContext:
 
 DOMAIN_CONTEXTS: dict[str, DomainContext] = {
     "consulta_simple": DomainContext(
-        tools=[],
+        tools=["get_memoria", "get_workers_status"],
         memory_categories=["nota_libre"],
         model_override="claude-haiku-4-5-20251001",
     ),

@@ -10,14 +10,15 @@ from app.agents.runner import AgentRunner
 from app.api.deps import get_session, require_auth
 from app.api.schemas import (
     ApprovalAction, ApprovalOut, ChatRequest, ChatResponse,
-    MemoryIn, MemoryOut, MessageOut, SecurityEventOut, SessionOut,
+    MemoryIn, MemoryOut, MessageOut, SecurityEventOut, SessionOut, WorkerOut,
 )
 from app.db.models import (
-    Message, Memory, PendingApproval, SecurityEvent, Session as DBSession,
+    Message, Memory, PendingApproval, SecurityEvent, Session as DBSession, Worker,
 )
 from app.db.session import AsyncSessionLocal
 from app.memory.service import MemoryService
 from app.security.validator import SecurityValidator
+from app.workers.manager import WorkerManager
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -255,6 +256,73 @@ async def resolve_security_event(
     return {"ok": True}
 
 
+# --- Workers ---
+
+@router.get("/workers", response_model=list[WorkerOut])
+async def list_workers(
+    active_only: bool = False,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> list[WorkerOut]:
+    mgr = WorkerManager(db)
+    workers = await mgr.get_active() if active_only else await mgr.get_all()
+    return [_worker_out(w) for w in workers]
+
+
+@router.get("/workers/{worker_id}", response_model=WorkerOut)
+async def get_worker(
+    worker_id: str,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> WorkerOut:
+    mgr = WorkerManager(db)
+    worker = await mgr.get_by_id(worker_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    return _worker_out(worker)
+
+
+@router.post("/workers/{worker_id}/cancel")
+async def cancel_worker(
+    worker_id: str,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    mgr = WorkerManager(db)
+    cancelled = await mgr.cancel(worker_id)
+    if not cancelled:
+        raise HTTPException(status_code=409, detail="Worker cannot be cancelled")
+    return {"ok": True}
+
+
+@router.post("/workers/hook")
+async def workers_hook(
+    payload: dict,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Recibe eventos de Claude Code (Stop, Notification) vía scripts/notify_stop.py."""
+    event_type = payload.get("event_type", "")
+    data = payload.get("payload", {})
+    session_id = data.get("session_id") or data.get("cwd", "unknown")
+
+    mgr = WorkerManager(db)
+    # Crear un worker de tipo "claude_code" como registro del evento externo
+    worker = await mgr.create(
+        agent_id="external",
+        session_id=session_id if len(session_id) == 36 else "00000000-0000-0000-0000-000000000000",
+        type="claude_code",
+        prompt=data.get("prompt", "(hook externo)"),
+        working_dir=data.get("cwd"),
+    )
+    await mgr.update_status(
+        worker.id,
+        status="done" if event_type == "Stop" else "running",
+        result_summary=data.get("result", ""),
+    )
+    return {"ok": True, "worker_id": worker.id}
+
+
 # --- Helpers ---
 
 async def _get_or_create_session(
@@ -315,4 +383,14 @@ def _security_event_out(e: SecurityEvent) -> SecurityEventOut:
         id=e.id, severity=e.severity, event_type=e.event_type, source=e.source,
         raw_content=e.raw_content, pattern=e.pattern, action_taken=e.action_taken,
         resolved=e.resolved, created_at=e.created_at,
+    )
+
+
+def _worker_out(w: Worker) -> WorkerOut:
+    return WorkerOut(
+        id=w.id, parent_id=w.parent_id, agent_id=w.agent_id, session_id=w.session_id,
+        type=w.type, status=w.status, prompt=w.prompt, working_dir=w.working_dir,
+        result_summary=w.result_summary, cost_usd=w.cost_usd,
+        notion_task_id=w.notion_task_id, error=w.error, notified=w.notified,
+        created_at=w.created_at, started_at=w.started_at, finished_at=w.finished_at,
     )
