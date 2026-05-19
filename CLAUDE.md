@@ -28,80 +28,65 @@ FASE 8: [ ] Agente Chrome
 
 ## Cómo iniciar el sistema (cada vez que arrancás)
 
-### Requisitos instalados en la Mac
+### Requisitos (ambos sistemas)
 
 ```
-Docker Desktop          — https://www.docker.com/products/docker-desktop
-Node.js >= 20           — brew install node
-Python >= 3.11          — brew install python (para scripts locales)
-pip packages locales    — pip install pynput sounddevice scipy numpy httpx
+Docker Desktop    — https://www.docker.com/products/docker-desktop
+Node.js >= 20     — macOS: brew install node | Windows: https://nodejs.org
+Python >= 3.11    — macOS: brew install python | Windows: https://python.org
 ```
 
-### 1. Levantar el backend (Docker)
+Dependencias locales para los scripts de voz (una sola vez):
 
 ```bash
-cd "/Users/lucascastro/Desktop/Lucas/lucascastro2929 Github/Agente_Orquestador/Agente_Orquestador"
-docker compose up -d
+pip install -r scripts/requirements_local.txt
+# incluye: pynput sounddevice scipy numpy httpx plyer
 ```
 
-Espera ~10 segundos y verificá que todo esté OK:
+### Iniciar todo — macOS
 
 ```bash
-docker compose ps                        # todos deben estar "Up" / "healthy"
-curl http://localhost:8000/health        # esperado: {"status":"ok"}
+./start.sh
 ```
 
-Servicios que deben estar corriendo:
+Hace: Docker → health check → frontend (localhost:3000) → hotkey de voz (Cmd+<)
+
+### Iniciar todo — Windows
+
+```powershell
+powershell -ExecutionPolicy Bypass -File start.ps1
+```
+
+Hace: Docker → health check → frontend en ventana nueva → hotkey de voz (Ctrl+<) → abre browser
+
+### Diferencias por sistema operativo
+
+| | macOS | Windows |
+|---|---|---|
+| Script de inicio | `./start.sh` | `start.ps1` |
+| Hotkey de voz | `Cmd+<` | `Ctrl+<` |
+| Notificaciones | osascript (nativas) | plyer (toast) |
+| Shell | bash/zsh | PowerShell |
+
+### Servicios que deben estar corriendo
+
 - `postgres` — base de datos
 - `redis` — broker de Celery
 - `backend` — FastAPI en puerto 8000
 - `worker` — Celery worker (tareas en background)
 - `celery-beat` — tareas programadas (watchers de Gmail/Calendar)
 
-### 2. Levantar el frontend (Web UI)
+### Verificación rápida
 
 ```bash
-cd "/Users/lucascastro/Desktop/Lucas/lucascastro2929 Github/Agente_Orquestador/Agente_Orquestador/frontend"
-npm run dev
-```
-
-Abrí http://localhost:3000
-
-### 3. Hotkey de voz en Mac (opcional)
-
-En una terminal separada:
-
-```bash
-cd "/Users/lucascastro/Desktop/Lucas/lucascastro2929 Github/Agente_Orquestador/Agente_Orquestador"
-export APP_AUTH_TOKEN=$(grep APP_AUTH_TOKEN .env | cut -d= -f2)
-export BACKEND_URL=http://localhost:8000
-python scripts/voice_hotkey.py
-```
-
-Mantener `Cmd+<` para grabar, soltar para enviar al orquestador.
-
-### Verificación rápida del sistema
-
-```bash
-# Backend healthy
-curl http://localhost:8000/health
-
-# Agentes disponibles
-curl http://localhost:8000/api/agents \
-  -H "Authorization: Bearer $(grep APP_AUTH_TOKEN .env | cut -d= -f2)"
-
-# Test de chat
-curl -X POST http://localhost:8000/api/chat \
-  -H "Authorization: Bearer $(grep APP_AUTH_TOKEN .env | cut -d= -f2)" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"hola"}'
+docker compose ps                                        # todos "Up" / "healthy"
+curl http://localhost:8000/health                        # {"status":"ok"}
 ```
 
 ### Apagar todo
 
 ```bash
-cd "/Users/lucascastro/Desktop/Lucas/lucascastro2929 Github/Agente_Orquestador/Agente_Orquestador"
-docker compose down
+docker compose down     # detiene y elimina los contenedores (datos en volúmenes se conservan)
 ```
 
 ---
