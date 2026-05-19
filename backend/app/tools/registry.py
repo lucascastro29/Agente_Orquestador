@@ -316,3 +316,69 @@ registry.register(LocalTool(
     handler=_handle_notion_get_page,
     requires_confirmation=False,
 ))
+
+
+# --- Tools de sub-agentes (Fase 5) ---
+
+async def _handle_create_subagent(
+    worker_manager: Any,
+    session_id: str,
+    type: str,
+    name: str,
+    objective: str,
+    working_dir: str | None = None,
+    notion_task_id: str | None = None,
+    notify_on_done: bool = True,  # noqa: ARG001 — reservado para uso futuro
+) -> dict:
+    from app.agents.subagent_registry import get_subagent
+    sub_cfg = get_subagent(type)
+
+    worker = await worker_manager.create(
+        agent_id=sub_cfg.id,
+        session_id=session_id,
+        type="subagent",
+        prompt=f"[{name}] {objective}",
+        working_dir=working_dir,
+        notion_task_id=notion_task_id,
+    )
+
+    from app.workers.tasks import execute_subagent
+    execute_subagent.delay(worker.id, type, objective, working_dir, session_id)
+
+    return {
+        "worker_id": worker.id,
+        "subagent_type": type,
+        "name": name,
+        "status": "pending",
+        "max_workers": sub_cfg.max_workers,
+        "max_duration_minutes": sub_cfg.max_duration_minutes,
+    }
+
+
+registry.register(LocalTool(
+    name="create_subagent",
+    description=(
+        "Instancia un sub-agente especializado para manejar una tarea compleja "
+        "que requiere múltiples Claude Code sessions coordinadas. "
+        "sub_dev: desarrollo técnico (hasta 5 workers). "
+        "sub_analista: análisis de datos e investigación (hasta 3 workers)."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": ["sub_dev", "sub_analista"],
+                "description": "Tipo de sub-agente a instanciar.",
+            },
+            "name": {"type": "string", "description": "Nombre descriptivo para identificar este sub-agente."},
+            "objective": {"type": "string", "description": "Objetivo completo que debe lograr el sub-agente."},
+            "working_dir": {"type": "string", "description": "Directorio de trabajo (debe estar en ALLOWED_WORKING_DIRS)."},
+            "notion_task_id": {"type": "string", "description": "ID de tarea Notion para actualizar al completar."},
+            "notify_on_done": {"type": "boolean", "default": True},
+        },
+        "required": ["type", "name", "objective"],
+    },
+    handler=_handle_create_subagent,
+    requires_confirmation=True,
+))

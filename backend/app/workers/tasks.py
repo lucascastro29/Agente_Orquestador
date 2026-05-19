@@ -120,3 +120,58 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
     except Exception as exc:
         await _update_worker(worker_id, status="failed", error=str(exc))
         await _notify_telegram(session_id, f"❌ Worker {worker_id[:8]} falló: {exc}")
+
+
+@celery_app.task(name="workers.execute_subagent", bind=True)
+def execute_subagent(self, worker_id: str, subagent_type: str, objective: str,
+                     working_dir: str | None, session_id: str):
+    _run_sync(_execute_subagent_async(worker_id, subagent_type, objective, working_dir, session_id))
+
+
+async def _execute_subagent_async(worker_id: str, subagent_type: str, objective: str,
+                                   working_dir: str | None, session_id: str):
+    from app.agents.subagent_registry import get_subagent
+    from app.agents.config import AgentConfig
+    from app.agents.runner import AgentRunner
+    from app.db.session import AsyncSessionLocal
+
+    await _update_worker(worker_id, status="running")
+
+    try:
+        sub_cfg = get_subagent(subagent_type)
+
+        full_objective = objective
+        if working_dir:
+            full_objective = f"{objective}\n\nDirectorio de trabajo: {working_dir}"
+
+        agent = AgentConfig(
+            id=sub_cfg.id,
+            model=sub_cfg.model,
+            system_prompt=sub_cfg.system_prompt,
+            allowed_tools=sub_cfg.allowed_tools,
+            approval_policy=sub_cfg.approval_policy,
+            max_tokens=8096,
+        )
+
+        async with AsyncSessionLocal() as db:
+            runner = AgentRunner(db)
+            result = await runner.run(
+                agent=agent,
+                session_id=session_id,
+                prior_messages=[],
+                user_message=full_objective,
+            )
+
+        output = result.text or "(sin output)"
+        await _update_worker(
+            worker_id,
+            status="done",
+            output=output,
+            result_summary=output[:500],
+        )
+        msg = f"✅ Sub-agente {subagent_type} terminó\n\n{output[:400]}"
+        await _notify_telegram(session_id, msg)
+
+    except Exception as exc:
+        await _update_worker(worker_id, status="failed", error=str(exc))
+        await _notify_telegram(session_id, f"❌ Sub-agente {worker_id[:8]} falló: {exc}")
