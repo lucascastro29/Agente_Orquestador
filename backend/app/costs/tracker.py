@@ -7,13 +7,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Message, Session as DBSession
 
 # Precios en USD por millón de tokens
+# Incluye alias cortos y IDs completos que devuelve la API
 PRICES: dict[str, dict[str, float]] = {
-    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
-    "claude-haiku-4-5":  {"input": 1.0, "output":  5.0, "cache_read": 0.1, "cache_write": 1.25},
-    "claude-opus-4-7":   {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
+    "claude-sonnet-4-6":            {"input": 3.0, "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75},
+    "claude-haiku-4-5":             {"input": 1.0, "output":  5.0, "cache_read": 0.1,  "cache_write": 1.25},
+    "claude-haiku-4-5-20251001":    {"input": 1.0, "output":  5.0, "cache_read": 0.1,  "cache_write": 1.25},
+    "claude-opus-4-7":              {"input": 5.0, "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25},
 }
 
 _FALLBACK = {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}
+
+
+def _normalize_model(model: str) -> str:
+    """Devuelve el precio del modelo aunque la API devuelva el ID con fecha."""
+    if model in PRICES:
+        return model
+    # Intentar prefijo: "claude-haiku-4-5-20251001" → buscar "claude-haiku-4-5"
+    for key in PRICES:
+        if model.startswith(key):
+            return key
+    return model
 
 
 @dataclass
@@ -27,7 +40,7 @@ class CostTracker:
         self.db = db
 
     def calculate(self, model: str, usage: object) -> float:
-        p = PRICES.get(model, _FALLBACK)
+        p = PRICES.get(_normalize_model(model), _FALLBACK)
         total = 0.0
         total += getattr(usage, "input_tokens", 0) * p["input"] / 1_000_000
         total += getattr(usage, "output_tokens", 0) * p["output"] / 1_000_000

@@ -5,7 +5,6 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.config import get_agent
 from app.agents.runner import AgentRunner
 from app.config import settings
 from app.db.models import Message, PendingApproval, Session as DBSession
@@ -69,13 +68,11 @@ async def telegram_webhook(
         # Cargar historial de mensajes de la sesión
         prior_messages = await _load_prior_messages(db, session.id)
 
-        agent = get_agent("orchestrator")
         runner = AgentRunner(db)
-        result = await runner.run(
-            agent=agent,
+        result = await runner.run_routed(
+            message=text,
             session_id=session.id,
             prior_messages=prior_messages,
-            user_message=text,
             channel="telegram",
         )
 

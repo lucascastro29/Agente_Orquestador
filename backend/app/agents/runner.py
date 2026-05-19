@@ -8,11 +8,13 @@ import anthropic
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.config import AgentConfig
+from app.agents.config import AgentConfig, ORCHESTRATOR_SYSTEM, get_agent
 from app.config import settings
 from app.costs.tracker import CostTracker
 from app.db.models import Message, PendingApproval, Session as DBSession, ToolTrace
 from app.memory.service import MemoryService
+from app.router.classifier import MessageRouter, RouteResult
+from app.router.domain_tools import get_domain_context
 from app.security.validator import SecurityValidator
 from app.tools.registry import registry
 
@@ -155,6 +157,130 @@ class AgentRunner:
             session_cost=session_cost,
             cost_footer=footer,
             cost_detail=cost_detail,
+        )
+
+    # --- Router inteligente (Fase 2) ---
+
+    async def run_routed(
+        self,
+        message: str,
+        session_id: str,
+        prior_messages: list[dict],
+        channel: str = "web",
+    ) -> RunResult:
+        """Clasifica el mensaje y despacha al agente/modelo adecuado."""
+        route = await MessageRouter().classify(message)
+
+        # Bloquear por seguridad antes de crear nada
+        if route.security_flag == "block":
+            await self._handle_security_block(message, session_id, route)
+            return RunResult(blocked=True, blocked_reason="Mensaje bloqueado por política de seguridad.")
+
+        # Consulta simple → Haiku directo, sin tools, sin loop agéntico completo
+        if route.complexity == "low" and route.suggested_model == "haiku":
+            return await self._run_direct_haiku(message, session_id, prior_messages, route, channel)
+
+        # Resto → orquestador con contexto filtrado
+        filtered_agent = self._build_filtered_agent(route)
+        return await self.run(
+            agent=filtered_agent,
+            session_id=session_id,
+            prior_messages=prior_messages,
+            user_message=message,
+            channel=channel,
+        )
+
+    async def _run_direct_haiku(
+        self,
+        message: str,
+        session_id: str,
+        prior_messages: list[dict],
+        route: RouteResult,
+        channel: str,
+    ) -> RunResult:
+        model = "claude-haiku-4-5-20251001"
+        ctx = get_domain_context(route.category)
+
+        # Memoria filtrada para consulta simple
+        memory_entries = await self.memory_svc.get_relevant(
+            limit=10, categories=ctx.memory_categories
+        )
+        memory_text = self.memory_svc.format_for_prompt(memory_entries)
+        system_text = ORCHESTRATOR_SYSTEM
+        if memory_text:
+            system_text += f"\n\n{memory_text}"
+
+        messages = list(prior_messages)
+        messages.append({"role": "user", "content": message})
+
+        response = await self.client.messages.create(
+            model=model,
+            max_tokens=1024,
+            system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+            messages=messages,
+        )
+
+        text = "".join(b.text for b in response.content if hasattr(b, "text"))
+        turn_cost = self.cost_tracker.calculate(model, response.usage)
+
+        await self._persist_turn(
+            session_id=session_id,
+            user_message=message,
+            response=response,
+            model=model,
+            cost_usd=turn_cost,
+        )
+        session_cost = await self._update_session_cost(session_id, turn_cost)
+
+        footer = self.cost_tracker.format_footer_telegram(turn_cost, session_cost, response.usage) if channel == "telegram" else ""
+        cost_detail = self.cost_tracker.format_footer_web(turn_cost, session_cost, response.usage)
+
+        return RunResult(
+            text=text + footer,
+            turn_cost=turn_cost,
+            session_cost=session_cost,
+            cost_footer=footer,
+            cost_detail=cost_detail,
+        )
+
+    def _build_filtered_agent(self, route: RouteResult) -> AgentConfig:
+        from app.agents.config import AgentConfig
+        ctx = get_domain_context(route.category)
+
+        model_map = {
+            "haiku": "claude-haiku-4-5-20251001",
+            "sonnet": "claude-sonnet-4-6",
+            "opus": "claude-opus-4-7",
+        }
+        model = ctx.model_override or model_map.get(route.suggested_model, "claude-sonnet-4-6")
+
+        # tools: None en el contexto = todas; lista vacía = ninguna
+        if ctx.tools is None:
+            allowed_tools = None
+        elif len(ctx.tools) == 0:
+            allowed_tools = []
+        else:
+            allowed_tools = ctx.tools
+
+        return AgentConfig(
+            id="orchestrator",
+            model=model,
+            system_prompt=ORCHESTRATOR_SYSTEM,
+            allowed_tools=allowed_tools,
+            max_tokens=8096,
+        )
+
+    async def _handle_security_block(
+        self, message: str, session_id: str, route: RouteResult
+    ) -> None:
+        await self.security.log_event(
+            severity="critical",
+            event_type="injection_attempt",
+            source="user_message",
+            raw_content=message,
+            action_taken="blocked",
+            session_id=session_id if session_id else None,
+            pattern=f"router:security_flag=block category={route.category}",
         )
 
     async def _build_system_param(self, agent: AgentConfig) -> list[dict]:

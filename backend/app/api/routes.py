@@ -48,20 +48,17 @@ async def chat(
             blocked_reason="Mensaje bloqueado por política de seguridad.",
         )
 
-    agent = get_agent(req.agent_id)
-
-    # Obtener o crear sesión
-    session = await _get_or_create_session(db, req.session_id, agent.id)
+    # Obtener o crear sesión (agent_id default = orchestrator)
+    session = await _get_or_create_session(db, req.session_id, req.agent_id)
 
     # Historial
     prior_messages = await _load_prior_messages(db, session.id)
 
     runner = AgentRunner(db)
-    result = await runner.run(
-        agent=agent,
+    result = await runner.run_routed(
+        message=req.message,
         session_id=session.id,
         prior_messages=prior_messages,
-        user_message=req.message,
         channel="web",
     )
 
