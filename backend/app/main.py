@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -13,7 +14,18 @@ from app.telegram.webhook import router as telegram_router
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Iniciar polling de Telegram en background (no requiere webhook ni ngrok)
+    from app.telegram.polling import run_polling
+    polling_task = asyncio.create_task(run_polling())
+
     yield
+
+    polling_task.cancel()
+    try:
+        await polling_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(title="Agente Orquestador", lifespan=lifespan)
