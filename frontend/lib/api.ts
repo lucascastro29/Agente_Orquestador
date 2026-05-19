@@ -124,3 +124,32 @@ export async function resolveSecurityEvent(id: string): Promise<void> {
     headers: headers(),
   });
 }
+
+export interface AgentEntry {
+  id: string;
+  type: string;
+  model: string;
+  tools: string[];
+  max_workers: number | null;
+  approval_policy: string;
+  active_workers: number;
+  total_sessions: number;
+}
+
+export interface ScheduleTaskEntry {
+  name: string;
+  label: string;
+  schedule: string;
+  enabled: boolean;
+  last_checked_at: string | null;
+}
+
+export async function getAgents(): Promise<AgentEntry[]> {
+  const res = await fetch(`${BASE}/api/agents`, { headers: headers() });
+  return res.json();
+}
+
+export async function getSchedule(): Promise<ScheduleTaskEntry[]> {
+  const res = await fetch(`${BASE}/api/schedule`, { headers: headers() });
+  return res.json();
+}

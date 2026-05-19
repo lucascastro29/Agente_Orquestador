@@ -99,3 +99,22 @@ class WorkerOut(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+
+
+class AgentOut(BaseModel):
+    id: str
+    type: str            # "orchestrator" | "subagent"
+    model: str
+    tools: list[str]
+    max_workers: int | None
+    approval_policy: str
+    active_workers: int
+    total_sessions: int
+
+
+class ScheduleTaskOut(BaseModel):
+    name: str
+    label: str
+    schedule: str
+    enabled: bool
+    last_checked_at: datetime | None

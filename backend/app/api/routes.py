@@ -9,8 +9,8 @@ from app.agents.config import get_agent
 from app.agents.runner import AgentRunner
 from app.api.deps import get_session, require_auth
 from app.api.schemas import (
-    ApprovalAction, ApprovalOut, ChatRequest, ChatResponse,
-    MemoryIn, MemoryOut, MessageOut, SecurityEventOut, SessionOut, WorkerOut,
+    AgentOut, ApprovalAction, ApprovalOut, ChatRequest, ChatResponse,
+    MemoryIn, MemoryOut, MessageOut, ScheduleTaskOut, SecurityEventOut, SessionOut, WorkerOut,
 )
 from app.db.models import (
     Message, Memory, PendingApproval, SecurityEvent, Session as DBSession, Worker,
@@ -400,6 +400,98 @@ async def _handle_cc_notification(data: dict) -> None:
         app_settings.telegram_allowed_chat_id,
         f"🔔 <b>{title}</b>\n{message}",
     )
+
+
+# --- Agents dashboard ---
+
+@router.get("/agents", response_model=list[AgentOut])
+async def list_agents(
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> list[AgentOut]:
+    from sqlalchemy import func
+    from app.agents.config import AGENTS
+    from app.agents.subagent_registry import SUB_AGENTS
+    from app.tools.registry import registry as tool_registry
+
+    # Contar workers activos y sesiones por agent_id
+    active_q = await db.execute(
+        select(Worker.agent_id, func.count(Worker.id).label("cnt"))
+        .where(Worker.status.in_(["pending", "running", "waiting_input"]))
+        .group_by(Worker.agent_id)
+    )
+    active_by_agent: dict[str, int] = {r.agent_id: r.cnt for r in active_q}
+
+    sessions_q = await db.execute(
+        select(DBSession.agent_id, func.count(DBSession.id).label("cnt"))
+        .group_by(DBSession.agent_id)
+    )
+    sessions_by_agent: dict[str, int] = {r.agent_id: r.cnt for r in sessions_q}
+
+    result: list[AgentOut] = []
+
+    # Orquestador
+    for agent in AGENTS.values():
+        tools = tool_registry.names() if agent.allowed_tools is None else agent.allowed_tools
+        result.append(AgentOut(
+            id=agent.id,
+            type="orchestrator",
+            model=agent.model,
+            tools=tools,
+            max_workers=None,
+            approval_policy=agent.approval_policy,
+            active_workers=active_by_agent.get(agent.id, 0),
+            total_sessions=sessions_by_agent.get(agent.id, 0),
+        ))
+
+    # Sub-agentes
+    for sub in SUB_AGENTS.values():
+        result.append(AgentOut(
+            id=sub.id,
+            type="subagent",
+            model=sub.model,
+            tools=sub.allowed_tools,
+            max_workers=sub.max_workers,
+            approval_policy=sub.approval_policy,
+            active_workers=active_by_agent.get(sub.id, 0),
+            total_sessions=sessions_by_agent.get(sub.id, 0),
+        ))
+
+    return result
+
+
+@router.get("/schedule", response_model=list[ScheduleTaskOut])
+async def list_schedule(
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> list[ScheduleTaskOut]:
+    from app.config import settings as app_settings
+    from app.db.models import WatcherState
+    from sqlalchemy import select as sa_select
+
+    # Leer últimos checkeos de los watchers
+    states_q = await db.execute(sa_select(WatcherState))
+    states: dict[str, WatcherState] = {s.watcher: s for s in states_q.scalars().all()}
+
+    mail_state = states.get("mail")
+    cal_state = states.get("calendar")
+
+    return [
+        ScheduleTaskOut(
+            name="check_mail",
+            label="Watcher Gmail",
+            schedule="cada 15 min",
+            enabled=app_settings.gmail_watcher_enabled,
+            last_checked_at=mail_state.last_checked_at if mail_state else None,
+        ),
+        ScheduleTaskOut(
+            name="check_calendar",
+            label="Watcher Calendar",
+            schedule="cada 30 min",
+            enabled=app_settings.calendar_watcher_enabled,
+            last_checked_at=cal_state.last_checked_at if cal_state else None,
+        ),
+    ]
 
 
 # --- Helpers ---
