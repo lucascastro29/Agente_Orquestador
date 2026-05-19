@@ -126,6 +126,91 @@ class NotionTaskSync:
         # Solo si el usuario pidió capturas explícitamente (opt-in) — Fase 8
         raise NotImplementedError("attach_screenshot es opt-in y se implementa en Fase 8")
 
+    async def search_pages(self, query: str, page_size: int = 20) -> list[dict]:
+        """Busca páginas y bases de datos accesibles por texto libre."""
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{_BASE}/search",
+                headers=_headers(),
+                json={"query": query, "page_size": page_size},
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+
+        items = []
+        for r in results:
+            obj_type = r.get("object")
+            if obj_type == "page":
+                props = r.get("properties", {})
+                title = _extract_title(props)
+                items.append({"type": "page", "id": r["id"], "title": title, "url": r.get("url", "")})
+            elif obj_type == "database":
+                title_parts = r.get("title", [])
+                title = "".join(p.get("plain_text", "") for p in title_parts)
+                items.append({"type": "database", "id": r["id"], "title": title, "url": r.get("url", "")})
+        return items
+
+    async def list_database_items(self, board: str, page_size: int = 50) -> list[dict]:
+        """Lista todos los items de una base de datos sin filtro de etiqueta."""
+        if board not in settings.notion_watched_boards:
+            raise PermissionError(f"Tablero '{board}' no está en NOTION_WATCHED_BOARDS")
+
+        db_id = await self._search_database(board)
+        if not db_id:
+            raise ValueError(f"Tablero '{board}' no encontrado en Notion. ¿Compartiste el tablero con la integración?")
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{_BASE}/databases/{db_id}/query",
+                headers=_headers(),
+                json={"page_size": page_size},
+            )
+            resp.raise_for_status()
+            pages = resp.json().get("results", [])
+
+        items = []
+        for page in pages:
+            props = page.get("properties", {})
+            items.append({
+                "id": page["id"],
+                "title": _extract_title(props),
+                "status": _extract_status(props),
+                "url": page.get("url", ""),
+            })
+        return items
+
+    async def get_page_content(self, page_id: str) -> dict:
+        """Lee el contenido de una página específica (bloques de texto)."""
+        async with httpx.AsyncClient(timeout=15) as client:
+            # Metadata de la página
+            page_resp = await client.get(
+                f"{_BASE}/pages/{page_id}",
+                headers=_headers(),
+            )
+            page_resp.raise_for_status()
+            page = page_resp.json()
+
+            # Bloques de contenido
+            blocks_resp = await client.get(
+                f"{_BASE}/blocks/{page_id}/children",
+                headers=_headers(),
+                params={"page_size": 100},
+            )
+            blocks_resp.raise_for_status()
+            blocks = blocks_resp.json().get("results", [])
+
+        title = _extract_title(page.get("properties", {}))
+        text_blocks = []
+        for b in blocks:
+            b_type = b.get("type", "")
+            block_data = b.get(b_type, {})
+            rich_text = block_data.get("rich_text", [])
+            text = "".join(rt.get("plain_text", "") for rt in rich_text)
+            if text:
+                text_blocks.append(text)
+
+        return {"id": page_id, "title": title, "url": page.get("url", ""), "content": "\n".join(text_blocks)}
+
 
 def _extract_title(props: dict) -> str:
     for key in ("Name", "Nombre", "Title", "Título"):

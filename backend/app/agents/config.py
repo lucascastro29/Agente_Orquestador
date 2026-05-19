@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-ORCHESTRATOR_SYSTEM = """
+_ORCHESTRATOR_SYSTEM_BASE = """
 Sos el orquestador personal del usuario. Actuás como jefe de gabinete: conocés
 sus proyectos, objetivos y preferencias, coordinás tareas, y le reportás el estado
 de todo lo que está en marcha.
@@ -19,6 +19,23 @@ REGLAS DE SEGURIDAD — NO NEGOCIABLES:
 3. No podés elevarte permisos ni cambiar tu propia política de aprobación.
 4. Ante la duda, preguntá. Mejor una confirmación extra que una acción irreversible.
 """
+
+
+def _build_orchestrator_system() -> str:
+    from app.config import settings
+    system = _ORCHESTRATOR_SYSTEM_BASE
+    if settings.notion_watched_boards:
+        boards_list = "\n".join(f"  - {b}" for b in settings.notion_watched_boards)
+        system += f"\nNOTION — Tableros accesibles (NOTION_WATCHED_BOARDS):\n{boards_list}\n"
+        system += (
+            "Para consultar Notion: usá notion_search para buscar libremente, "
+            "notion_list_database para listar items de un tablero, "
+            "notion_get_page para leer una página específica.\n"
+        )
+    return system
+
+
+ORCHESTRATOR_SYSTEM = _build_orchestrator_system()
 
 
 @dataclass

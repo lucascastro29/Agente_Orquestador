@@ -195,6 +195,26 @@ async def _handle_get_notion_tasks(board: str, label: str = "CLAUDE CODE") -> di
     }
 
 
+async def _handle_notion_search(query: str = "", page_size: int = 20) -> dict:
+    from app.notion.task_sync import NotionTaskSync
+    sync = NotionTaskSync()
+    items = await sync.search_pages(query=query, page_size=page_size)
+    return {"results": items, "count": len(items)}
+
+
+async def _handle_notion_list_database(board: str, page_size: int = 50) -> dict:
+    from app.notion.task_sync import NotionTaskSync
+    sync = NotionTaskSync()
+    items = await sync.list_database_items(board=board, page_size=page_size)
+    return {"items": items, "count": len(items)}
+
+
+async def _handle_notion_get_page(page_id: str) -> dict:
+    from app.notion.task_sync import NotionTaskSync
+    sync = NotionTaskSync()
+    return await sync.get_page_content(page_id=page_id)
+
+
 registry.register(LocalTool(
     name="run_claude_code",
     description=(
@@ -248,5 +268,51 @@ registry.register(LocalTool(
         "required": ["board"],
     },
     handler=_handle_get_notion_tasks,
+    requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="notion_search",
+    description=(
+        "Busca páginas y bases de datos en el workspace de Notion por texto libre. "
+        "Usá query vacío ('') para listar todo lo accesible."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query":     {"type": "string", "description": "Texto a buscar. Vacío lista todo.", "default": ""},
+            "page_size": {"type": "integer", "default": 20},
+        },
+    },
+    handler=_handle_notion_search,
+    requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="notion_list_database",
+    description="Lista todos los items de un tablero/base de datos de Notion sin filtro de etiqueta.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "board":     {"type": "string", "description": "Nombre exacto del tablero (debe estar en NOTION_WATCHED_BOARDS)."},
+            "page_size": {"type": "integer", "default": 50},
+        },
+        "required": ["board"],
+    },
+    handler=_handle_notion_list_database,
+    requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="notion_get_page",
+    description="Lee el contenido completo de una página de Notion dado su ID.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "page_id": {"type": "string", "description": "ID de la página (UUID sin guiones o con guiones)."},
+        },
+        "required": ["page_id"],
+    },
+    handler=_handle_notion_get_page,
     requires_confirmation=False,
 ))
