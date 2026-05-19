@@ -15,7 +15,7 @@ FASE 2: [x] Router inteligente
 FASE 3: [x] Web UI
 FASE 4: [x] Notion como fuente de tareas
 FASE 5: [x] Sub-agentes especializados
-FASE 6: [ ] Gmail + Calendar + Watchers
+FASE 6: [x] Gmail + Calendar + Watchers
 FASE 7: [ ] Claude Code bridge
 FASE 8: [ ] Agente Chrome
 

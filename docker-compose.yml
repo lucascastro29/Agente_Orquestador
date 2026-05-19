@@ -46,5 +46,18 @@ services:
       - ${WORKSPACE_DIR:-~/Desktop/Lucas}:/workspace
     command: celery -A app.worker worker --loglevel=info --concurrency=4
 
+  celery-beat:
+    build: {context: ./backend, dockerfile: Dockerfile}
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agents:agents_local_dev@postgres:5432/agents
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    volumes:
+      - ./backend:/app
+    command: celery -A app.worker beat --loglevel=info --scheduler celery.beat:PersistentScheduler
+
 volumes:
   postgres_data:

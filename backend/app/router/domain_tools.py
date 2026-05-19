@@ -3,9 +3,10 @@ from dataclasses import dataclass
 
 @dataclass
 class DomainContext:
-    tools: list[str] | None        # None = cargar todas
+    tools: list[str] | None              # None = cargar todas
     memory_categories: list[str] | None  # None = cargar toda
     model_override: str | None = None    # None = usar el sugerido por el router
+    use_mcp: bool = False                # True = inyectar MCP servers según categoría
 
 
 DOMAIN_CONTEXTS: dict[str, DomainContext] = {
@@ -28,10 +29,12 @@ DOMAIN_CONTEXTS: dict[str, DomainContext] = {
     "admin_email": DomainContext(
         tools=["get_memoria", "update_memoria"],
         memory_categories=["preferencia", "persona"],
+        use_mcp=True,
     ),
     "admin_calendar": DomainContext(
         tools=["get_memoria", "update_memoria"],
         memory_categories=["preferencia", "recordatorio"],
+        use_mcp=True,
     ),
     "analisis": DomainContext(
         tools=[

@@ -109,6 +109,18 @@ class SecurityEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class WatcherState(Base):
+    """Persiste el cursor de cada watcher para no reprocesar eventos."""
+    __tablename__ = "watcher_state"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    watcher: Mapped[str] = mapped_column(String, nullable=False, unique=True)  # "mail"|"calendar"
+    last_checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    last_history_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    extra: Mapped[dict] = mapped_column(JSONB, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class Worker(Base):
     __tablename__ = "workers"
 

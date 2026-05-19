@@ -1,5 +1,6 @@
 import os
 from celery import Celery
+from celery.schedules import crontab
 
 celery_app = Celery(
     "agente_orquestador",
@@ -11,4 +12,21 @@ celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
+    # Beat schedule — watchers (Fase 6)
+    beat_schedule={
+        "check-mail-every-15min": {
+            "task": "watchers.check_mail",
+            "schedule": crontab(minute="*/15"),
+        },
+        "check-calendar-every-30min": {
+            "task": "watchers.check_calendar",
+            "schedule": crontab(minute="*/30"),
+        },
+    },
+    # Registrar módulos de tasks para que beat los encuentre
+    imports=[
+        "app.workers.tasks",
+        "app.watchers.mail_watcher",
+        "app.watchers.calendar_watcher",
+    ],
 )

@@ -66,12 +66,11 @@ class AgentRunner:
 
         # Loop agéntico
         while True:
-            response = await self.client.messages.create(
-                model=agent.model,
-                max_tokens=agent.max_tokens,
+            response = await self._api_create(
+                agent=agent,
                 system=system_param,
                 messages=messages,
-                tools=tools if tools else anthropic.NOT_GIVEN,
+                tools=tools,
             )
 
             final_usage = response.usage
@@ -269,7 +268,7 @@ class AgentRunner:
         )
 
     def _build_filtered_agent(self, route: RouteResult) -> AgentConfig:
-        from app.agents.config import AgentConfig
+        from app.agents.config import AgentConfig, build_mcp_servers_for_category
         ctx = get_domain_context(route.category)
 
         model_map = {
@@ -287,11 +286,14 @@ class AgentRunner:
         else:
             allowed_tools = ctx.tools
 
+        mcp_servers = build_mcp_servers_for_category(route.category) if ctx.use_mcp else []
+
         return AgentConfig(
             id="orchestrator",
             model=model,
             system_prompt=ORCHESTRATOR_SYSTEM,
             allowed_tools=allowed_tools,
+            mcp_servers=mcp_servers,
             max_tokens=8096,
         )
 
@@ -398,7 +400,6 @@ class AgentRunner:
                 kwargs["tools"] = tools
 
             # Acumular el mensaje completo para el historial
-            content_blocks: list[Any] = []
             tool_uses: list[Any] = []
             current_tool_input_json = ""
             current_tool_name = ""
@@ -501,6 +502,81 @@ class AgentRunner:
 
             messages.append({"role": "user", "content": tool_results})
             tool_uses = []
+
+    async def _api_create(
+        self,
+        agent: AgentConfig,
+        system: list[dict],
+        messages: list[dict],
+        tools: list[dict],
+    ) -> Any:
+        """Wrapper que usa beta MCP si el agente tiene mcp_servers, o el endpoint estándar."""
+        kwargs: dict[str, Any] = dict(
+            model=agent.model,
+            max_tokens=agent.max_tokens,
+            system=system,
+            messages=messages,
+        )
+        if tools:
+            kwargs["tools"] = tools
+
+        if agent.mcp_servers:
+            try:
+                return await self.client.beta.messages.create(
+                    **kwargs,
+                    mcp_servers=agent.mcp_servers,
+                    betas=["mcp-client-2025-04-04"],
+                )
+            except Exception:
+                # SDK no soporta MCP en esta versión — degradar sin MCP
+                pass
+
+        return await self.client.messages.create(**kwargs)
+
+    # --- Watcher events (Fase 6) ---
+
+    async def receive_watcher_event(self, event_type: str, data: dict) -> str | None:
+        """Crea una sesión interna y corre el orquestador con el evento del watcher."""
+        from app.agents.config import ORCHESTRATOR
+        from app.db.models import Session as DBSession
+
+        session = DBSession(
+            agent_id="orchestrator",
+            channel="watcher",
+            external_chat_id=settings.telegram_allowed_chat_id or None,
+            title=f"watcher:{event_type}",
+        )
+        self.db.add(session)
+        await self.db.commit()
+        await self.db.refresh(session)
+
+        if event_type == "mail":
+            msg = (
+                f"[EVENTO WATCHER — MAIL NUEVO]\n"
+                f"De: {data.get('from', '?')}\n"
+                f"Asunto: {data.get('subject', '?')}\n"
+                f"Extracto: {data.get('snippet', '')}\n\n"
+                f"Decidí si vale la pena notificarme. Si sí, respondé con un resumen conciso."
+            )
+        elif event_type == "calendar":
+            msg = (
+                f"[EVENTO WATCHER — CALENDARIO]\n"
+                f"Evento: {data.get('title', '?')}\n"
+                f"Hora: {data.get('time', '?')}\n"
+                f"Asistentes: {data.get('attendees', '')}\n\n"
+                f"Decidí si vale la pena notificarme. Si sí, respondé con un recordatorio conciso."
+            )
+        else:
+            msg = f"[EVENTO WATCHER — {event_type.upper()}]\n{data}"
+
+        result = await self.run(
+            agent=ORCHESTRATOR,
+            session_id=session.id,
+            prior_messages=[],
+            user_message=msg,
+            channel="telegram",
+        )
+        return result.text if not result.blocked else None
 
     async def _build_system_param(self, agent: AgentConfig) -> list[dict]:
         memory_entries = await self.memory_svc.get_relevant(limit=20)

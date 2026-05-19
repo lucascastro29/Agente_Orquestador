@@ -62,6 +62,27 @@ AGENTS: dict[str, AgentConfig] = {
 }
 
 
+def build_mcp_servers_for_category(category: str) -> list[dict]:
+    """Devuelve MCP servers remotos para la categoría dada, si los tokens están configurados."""
+    from app.config import settings
+    servers = []
+    if category == "admin_email" and settings.gmail_oauth_token:
+        servers.append({
+            "type": "url",
+            "url": "https://gmail.googleapis.com/mcp/v1",
+            "name": "gmail",
+            "authorization_token": settings.gmail_oauth_token,
+        })
+    if category == "admin_calendar" and settings.calendar_oauth_token:
+        servers.append({
+            "type": "url",
+            "url": "https://calendar.googleapis.com/mcp/v1",
+            "name": "calendar",
+            "authorization_token": settings.calendar_oauth_token,
+        })
+    return servers
+
+
 def get_agent(agent_id: str) -> AgentConfig:
     if agent_id not in AGENTS:
         raise ValueError(f"Agente desconocido: {agent_id}")
