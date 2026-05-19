@@ -41,7 +41,9 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    volumes: [./backend:/app]
+    volumes:
+      - ./backend:/app
+      - ${WORKSPACE_DIR:-~/Desktop/Lucas}:/workspace
     command: celery -A app.worker worker --loglevel=info --concurrency=4
 
 volumes:

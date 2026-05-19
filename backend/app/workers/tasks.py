@@ -70,12 +70,16 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
     await _update_worker(worker_id, status="running")
 
     try:
+        import os
+        env = os.environ.copy()
+        # Claude Code usa ANTHROPIC_API_KEY del entorno
         proc = subprocess.run(
-            ["claude", "--print", "--no-streaming", prompt],
+            ["claude", "--print", prompt],
             cwd=working_dir,
             capture_output=True,
             text=True,
             timeout=1800,
+            env=env,
         )
         output = proc.stdout or ""
         stderr = proc.stderr or ""

@@ -233,7 +233,7 @@ registry.register(LocalTool(
         "required": ["prompt", "working_dir"],
     },
     handler=_handle_run_claude_code,
-    requires_confirmation=False,
+    requires_confirmation=True,
 ))
 
 registry.register(LocalTool(

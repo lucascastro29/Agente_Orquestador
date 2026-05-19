@@ -96,41 +96,80 @@ class NotionTaskSync:
             ))
         return tasks
 
+    async def _get_page_properties(self, page_id: str) -> dict:
+        """Devuelve el schema de propiedades de una página (nombre → tipo)."""
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{_BASE}/pages/{page_id}", headers=_headers())
+            resp.raise_for_status()
+            return {k: v.get("type") for k, v in resp.json().get("properties", {}).items()}
+
     async def update_task_progress(self, task_id: str, progress: int, log: str) -> None:
+        props = await self._get_page_properties(task_id)
+        update: dict = {}
+
+        # Status: buscar columna de tipo status o select
+        for name in ("Status", "Estado", "Etapa"):
+            if name in props:
+                ptype = props[name]
+                if ptype == "status":
+                    update[name] = {"status": {"name": "En progreso"}}
+                elif ptype == "select":
+                    update[name] = {"select": {"name": "En progreso"}}
+                break
+
+        # Progress: columna numérica
+        for name in ("Progress", "Progreso", "Avance"):
+            if name in props and props[name] == "number":
+                update[name] = {"number": progress}
+                break
+
+        # Log: columna de texto enriquecido
+        for name in ("Log", "Notas", "Notes", "Descripción"):
+            if name in props and props[name] == "rich_text":
+                update[name] = {"rich_text": [{"text": {"content": log[:2000]}}]}
+                break
+
+        if not update:
+            return  # No hay columnas conocidas — ignorar silenciosamente
+
         async with httpx.AsyncClient(timeout=15) as client:
             await client.patch(
                 f"{_BASE}/pages/{task_id}",
                 headers=_headers(),
-                json={
-                    "properties": {
-                        "Status": {"select": {"name": "En progreso"}},
-                        "Progress": {"number": progress},
-                    }
-                },
-            )
-            # Append log as a comment block
-            await client.patch(
-                f"{_BASE}/pages/{task_id}",
-                headers=_headers(),
-                json={
-                    "properties": {
-                        "Log": {"rich_text": [{"text": {"content": log[:2000]}}]}
-                    }
-                },
+                json={"properties": update},
             )
 
     async def complete_task(self, task_id: str, result: str, cost_usd: float) -> None:
+        props = await self._get_page_properties(task_id)
+        update: dict = {}
+
+        for name in ("Status", "Estado", "Etapa"):
+            if name in props:
+                ptype = props[name]
+                if ptype == "status":
+                    update[name] = {"status": {"name": "Completado"}}
+                elif ptype == "select":
+                    update[name] = {"select": {"name": "Completado"}}
+                break
+
+        for name in ("Result", "Resultado", "Notas", "Notes"):
+            if name in props and props[name] == "rich_text":
+                update[name] = {"rich_text": [{"text": {"content": result[:2000]}}]}
+                break
+
+        for name in ("Cost USD", "Costo", "Cost"):
+            if name in props and props[name] == "number":
+                update[name] = {"number": round(cost_usd, 6)}
+                break
+
+        if not update:
+            return
+
         async with httpx.AsyncClient(timeout=15) as client:
             await client.patch(
                 f"{_BASE}/pages/{task_id}",
                 headers=_headers(),
-                json={
-                    "properties": {
-                        "Status": {"select": {"name": "Completado"}},
-                        "Result": {"rich_text": [{"text": {"content": result[:2000]}}]},
-                        "Cost USD": {"number": round(cost_usd, 6)},
-                    }
-                },
+                json={"properties": update},
             )
 
     async def attach_screenshot(self, task_id: str, image_bytes: bytes) -> None:

@@ -1,3 +1,4 @@
+
 # Claude Agents — Documentación del Proyecto
 
 > Documento de contexto para sesiones de Claude Code y Projects de Claude.ai.
