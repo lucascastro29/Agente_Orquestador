@@ -26,6 +26,86 @@ FASE 8: [ ] Agente Chrome
 
 ---
 
+## Cómo iniciar el sistema (cada vez que arrancás)
+
+### Requisitos instalados en la Mac
+
+```
+Docker Desktop          — https://www.docker.com/products/docker-desktop
+Node.js >= 20           — brew install node
+Python >= 3.11          — brew install python (para scripts locales)
+pip packages locales    — pip install pynput sounddevice scipy numpy httpx
+```
+
+### 1. Levantar el backend (Docker)
+
+```bash
+cd "/Users/lucascastro/Desktop/Lucas/lucascastro2929 Github/Agente_Orquestador/Agente_Orquestador"
+docker compose up -d
+```
+
+Espera ~10 segundos y verificá que todo esté OK:
+
+```bash
+docker compose ps                        # todos deben estar "Up" / "healthy"
+curl http://localhost:8000/health        # esperado: {"status":"ok"}
+```
+
+Servicios que deben estar corriendo:
+- `postgres` — base de datos
+- `redis` — broker de Celery
+- `backend` — FastAPI en puerto 8000
+- `worker` — Celery worker (tareas en background)
+- `celery-beat` — tareas programadas (watchers de Gmail/Calendar)
+
+### 2. Levantar el frontend (Web UI)
+
+```bash
+cd "/Users/lucascastro/Desktop/Lucas/lucascastro2929 Github/Agente_Orquestador/Agente_Orquestador/frontend"
+npm run dev
+```
+
+Abrí http://localhost:3000
+
+### 3. Hotkey de voz en Mac (opcional)
+
+En una terminal separada:
+
+```bash
+cd "/Users/lucascastro/Desktop/Lucas/lucascastro2929 Github/Agente_Orquestador/Agente_Orquestador"
+export APP_AUTH_TOKEN=$(grep APP_AUTH_TOKEN .env | cut -d= -f2)
+export BACKEND_URL=http://localhost:8000
+python scripts/voice_hotkey.py
+```
+
+Mantener `Cmd+<` para grabar, soltar para enviar al orquestador.
+
+### Verificación rápida del sistema
+
+```bash
+# Backend healthy
+curl http://localhost:8000/health
+
+# Agentes disponibles
+curl http://localhost:8000/api/agents \
+  -H "Authorization: Bearer $(grep APP_AUTH_TOKEN .env | cut -d= -f2)"
+
+# Test de chat
+curl -X POST http://localhost:8000/api/chat \
+  -H "Authorization: Bearer $(grep APP_AUTH_TOKEN .env | cut -d= -f2)" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"hola"}'
+```
+
+### Apagar todo
+
+```bash
+cd "/Users/lucascastro/Desktop/Lucas/lucascastro2929 Github/Agente_Orquestador/Agente_Orquestador"
+docker compose down
+```
+
+---
+
 ## Regla de oro para Claude Code
 
 Cada fase produce un sistema que **funciona de punta a punta** antes de pasar a la siguiente. No empezás la Fase 2 hasta que la Fase 1 pasa todos sus criterios de éxito. Si el contexto se corta a mitad de una fase, dejás un `PROGRESS.md` con el estado exacto.

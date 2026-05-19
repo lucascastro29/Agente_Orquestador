@@ -8,11 +8,13 @@ import { RightPanel } from "@/components/layout/RightPanel";
 const SESSION_KEY = "ao_session_id";
 
 export default function Home() {
-  const [sessionId, setSessionId] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null;
-    return localStorage.getItem(SESSION_KEY);
-  });
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [memoryRefresh, setMemoryRefresh] = useState(0);
+
+  useEffect(() => {
+    const saved = localStorage.getItem(SESSION_KEY);
+    if (saved) setSessionId(saved);
+  }, []);
 
   const handleMemoryUpdate = useCallback(() => {
     setMemoryRefresh((n) => n + 1);

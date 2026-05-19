@@ -144,6 +144,19 @@ export interface ScheduleTaskEntry {
   last_checked_at: string | null;
 }
 
+export async function transcribeAudio(blob: Blob): Promise<string> {
+  const form = new FormData();
+  form.append("file", blob, "voice.webm");
+  const res = await fetch(`${BASE}/api/transcribe`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    body: form,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return (data.text ?? "").trim();
+}
+
 export async function getAgents(): Promise<AgentEntry[]> {
   const res = await fetch(`${BASE}/api/agents`, { headers: headers() });
   return res.json();

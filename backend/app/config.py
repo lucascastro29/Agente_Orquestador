@@ -21,8 +21,9 @@ class Settings(BaseSettings):
     notion_api_token: str = ""
     notion_watched_boards: list[str] = []
 
-    # Transcripción de voz (Whisper via OpenAI)
+    # Transcripción de voz (Whisper via OpenAI o local con faster-whisper)
     openai_api_key: str = ""
+    whisper_model: str = "base"  # tiny | base | small | medium — solo aplica al modo local
 
     # Gmail
     gmail_oauth_token: str = ""
