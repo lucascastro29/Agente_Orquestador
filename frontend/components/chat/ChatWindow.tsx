@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { MessageBubble, type ChatMessage, type CostDetail, type ToolEvent } from "./MessageBubble";
 import { InputBar } from "./InputBar";
 import { streamChat, getMessages, type MessageEntry } from "@/lib/api";
@@ -45,7 +44,17 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
   const [streaming, setStreaming] = useState(false);
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const loadedSessionRef = useRef<string | null>(null);
+  // true = el usuario está en el fondo (o no scrolleó manualmente)
+  const stickToBottomRef = useRef(true);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distFromBottom < 80;
+  }, []);
 
   // Cargar historial cuando cambia la sesión
   useEffect(() => {
@@ -57,6 +66,7 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
     if (loadedSessionRef.current === sessionId) return;
     loadedSessionRef.current = sessionId;
     setMessages([]);
+    stickToBottomRef.current = true;
     setLoading(true);
     getMessages(sessionId)
       .then((entries) => setMessages(entries.map(entryToMessage)))
@@ -64,13 +74,18 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
       .finally(() => setLoading(false));
   }, [sessionId]);
 
+  // Auto-scroll solo si el usuario está en el fondo
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (stickToBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages]);
 
   const send = useCallback(
     async (text: string) => {
       if (streaming) return;
+      // Al enviar, siempre volver al fondo
+      stickToBottomRef.current = true;
 
       const userMsg: ChatMessage = { id: randomId(), role: "user", text };
       const assistantId = randomId();
@@ -151,8 +166,12 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
   );
 
   return (
-    <div className="flex flex-col h-full">
-      <ScrollArea className="flex-1 px-4 py-4">
+    <div className="flex flex-col h-full min-h-0">
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-4 py-4 min-h-0"
+      >
         {loading && (
           <div className="flex items-center justify-center h-full text-muted-foreground text-sm mt-20">
             Cargando conversación…
@@ -169,7 +188,7 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
           ))}
         </div>
         <div ref={bottomRef} />
-      </ScrollArea>
+      </div>
       <InputBar onSend={send} disabled={streaming} />
     </div>
   );
