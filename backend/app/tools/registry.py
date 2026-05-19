@@ -215,6 +215,17 @@ async def _handle_notion_get_page(page_id: str) -> dict:
     return await sync.get_page_content(page_id=page_id)
 
 
+async def _handle_notion_create_task(
+    board: str,
+    title: str,
+    status: str | None = None,
+    description: str | None = None,
+) -> dict:
+    from app.notion.task_sync import NotionTaskSync
+    sync = NotionTaskSync()
+    return await sync.create_task(board=board, title=title, status=status, description=description)
+
+
 registry.register(LocalTool(
     name="run_claude_code",
     description=(
@@ -315,6 +326,26 @@ registry.register(LocalTool(
     },
     handler=_handle_notion_get_page,
     requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="notion_create_task",
+    description=(
+        "Crea una nueva tarea/página en un tablero de Notion. "
+        "Usá notion_search o notion_list_database primero si no sabés el nombre exacto del tablero."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "board":       {"type": "string", "description": "Nombre exacto del tablero (debe estar en NOTION_WATCHED_BOARDS)."},
+            "title":       {"type": "string", "description": "Título de la tarea."},
+            "status":      {"type": "string", "description": "Estado inicial (ej: 'Por hacer', 'En progreso'). Opcional."},
+            "description": {"type": "string", "description": "Descripción o detalle de la tarea. Opcional."},
+        },
+        "required": ["board", "title"],
+    },
+    handler=_handle_notion_create_task,
+    requires_confirmation=True,
 ))
 
 

@@ -103,6 +103,70 @@ class NotionTaskSync:
             resp.raise_for_status()
             return {k: v.get("type") for k, v in resp.json().get("properties", {}).items()}
 
+    async def _get_database_schema(self, db_id: str) -> dict:
+        """Devuelve el schema completo de una base de datos (nombre → {type, ...})."""
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{_BASE}/databases/{db_id}", headers=_headers())
+            resp.raise_for_status()
+            return resp.json().get("properties", {})
+
+    async def create_task(
+        self,
+        board: str,
+        title: str,
+        status: str | None = None,
+        description: str | None = None,
+    ) -> dict:
+        """Crea una nueva tarea en un tablero de Notion."""
+        if not self._is_allowed_board(board):
+            raise PermissionError(f"Tablero '{board}' no está en NOTION_WATCHED_BOARDS")
+
+        db_id = await self._search_database(board)
+        if not db_id:
+            raise ValueError(f"Tablero '{board}' no encontrado en Notion")
+
+        schema = await self._get_database_schema(db_id)
+        properties: dict = {}
+
+        # Propiedad título — buscar la de tipo "title" en el schema real
+        for prop_name, prop_info in schema.items():
+            if prop_info.get("type") == "title":
+                properties[prop_name] = {"title": [{"text": {"content": title}}]}
+                break
+        if not properties:
+            properties["Name"] = {"title": [{"text": {"content": title}}]}
+
+        # Estado
+        if status:
+            for prop_name in ("Status", "Estado", "Etapa"):
+                if prop_name in schema:
+                    ptype = schema[prop_name].get("type")
+                    if ptype == "status":
+                        properties[prop_name] = {"status": {"name": status}}
+                    elif ptype == "select":
+                        properties[prop_name] = {"select": {"name": status}}
+                    break
+
+        # Descripción
+        if description:
+            for prop_name in ("Description", "Descripción", "Notas", "Notes", "Detalle"):
+                if prop_name in schema and schema[prop_name].get("type") == "rich_text":
+                    properties[prop_name] = {
+                        "rich_text": [{"text": {"content": description[:2000]}}]
+                    }
+                    break
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{_BASE}/pages",
+                headers=_headers(),
+                json={"parent": {"database_id": db_id}, "properties": properties},
+            )
+            resp.raise_for_status()
+            page = resp.json()
+
+        return {"id": page["id"], "title": title, "url": page.get("url", ""), "board": board}
+
     async def update_task_progress(self, task_id: str, progress: int, log: str) -> None:
         props = await self._get_page_properties(task_id)
         update: dict = {}
