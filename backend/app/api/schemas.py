@@ -101,6 +101,10 @@ class WorkerOut(BaseModel):
     finished_at: datetime | None
 
 
+class TranscribeResponse(BaseModel):
+    text: str
+
+
 class AgentOut(BaseModel):
     id: str
     type: str            # "orchestrator" | "subagent"

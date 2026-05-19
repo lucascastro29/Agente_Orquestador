@@ -17,6 +17,7 @@ FASE 4: [x] Notion como fuente de tareas
 FASE 5: [x] Sub-agentes especializados
 FASE 6: [x] Gmail + Calendar + Watchers
 FASE 7: [x] Claude Code bridge
+FASE 7.5: [x] Voz — hotkey Mac + audio Telegram
 FASE 8: [ ] Agente Chrome
 
 ```

@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     notion_api_token: str = ""
     notion_watched_boards: list[str] = []
 
+    # Transcripción de voz (Whisper via OpenAI)
+    openai_api_key: str = ""
+
     # Gmail
     gmail_oauth_token: str = ""
     gmail_watcher_enabled: bool = False

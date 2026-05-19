@@ -1,0 +1,6 @@
+# Dependencias para los scripts locales (corren en tu Mac, no en Docker)
+pynput>=1.7
+sounddevice>=0.4
+scipy>=1.11
+numpy>=1.24
+httpx>=0.27

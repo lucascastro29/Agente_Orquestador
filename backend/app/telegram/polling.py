@@ -12,6 +12,49 @@ _BASE = "https://api.telegram.org/bot"
 _offset: int = 0
 
 
+async def _transcribe_telegram_voice(voice: dict, chat_id: str) -> str:
+    """Descarga el audio de Telegram y lo transcribe con Whisper. Devuelve '' si falla."""
+    from app.transcription.whisper import transcribe
+    from app.telegram.client import send_message
+
+    file_id = voice.get("file_id", "")
+    if not file_id:
+        return ""
+
+    try:
+        # Obtener path del archivo
+        async with httpx.AsyncClient(timeout=15) as client:
+            info = await client.get(
+                f"{_BASE}{settings.telegram_bot_token}/getFile",
+                params={"file_id": file_id},
+            )
+            info.raise_for_status()
+            file_path = info.json()["result"]["file_path"]
+
+            # Descargar el audio
+            audio_resp = await client.get(
+                f"https://api.telegram.org/file/bot{settings.telegram_bot_token}/{file_path}"
+            )
+            audio_resp.raise_for_status()
+            audio_bytes = audio_resp.content
+
+        filename = file_path.split("/")[-1] or "voice.ogg"
+        await send_message(chat_id, "🎙 Transcribiendo audio…")
+        text = await transcribe(audio_bytes, filename=filename)
+        if text:
+            await send_message(chat_id, f"📝 <i>{text}</i>", parse_mode="HTML")
+        return text
+
+    except RuntimeError as exc:
+        # Whisper no configurado
+        await send_message(chat_id, f"⚠️ {exc}")
+        return ""
+    except Exception as exc:
+        logger.error("Error transcribiendo audio de Telegram: %s", exc)
+        await send_message(chat_id, "⚠️ No pude transcribir el audio.")
+        return ""
+
+
 async def _get_updates(timeout: int = 30) -> list[dict]:
     global _offset
     url = f"{_BASE}{settings.telegram_bot_token}/getUpdates"
@@ -68,12 +111,22 @@ async def run_polling() -> None:
 
                     message = update.get("message", {})
                     chat_id = str(message.get("chat", {}).get("id", ""))
-                    text = message.get("text", "").strip()
 
-                    if not chat_id or not text:
+                    if not chat_id:
                         continue
 
                     if settings.telegram_allowed_chat_id and chat_id != settings.telegram_allowed_chat_id:
+                        continue
+
+                    # Transcribir voz/audio antes de procesar
+                    text = message.get("text", "").strip()
+                    voice = message.get("voice") or message.get("audio")
+                    if voice and not text:
+                        text = await _transcribe_telegram_voice(voice, chat_id)
+                        if not text:
+                            continue
+
+                    if not text:
                         continue
 
                     # Filtro de seguridad

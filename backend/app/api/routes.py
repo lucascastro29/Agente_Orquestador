@@ -8,9 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.config import get_agent
 from app.agents.runner import AgentRunner
 from app.api.deps import get_session, require_auth
+from fastapi import File, UploadFile
+
 from app.api.schemas import (
     AgentOut, ApprovalAction, ApprovalOut, ChatRequest, ChatResponse,
-    MemoryIn, MemoryOut, MessageOut, ScheduleTaskOut, SecurityEventOut, SessionOut, WorkerOut,
+    MemoryIn, MemoryOut, MessageOut, ScheduleTaskOut, SecurityEventOut,
+    SessionOut, TranscribeResponse, WorkerOut,
 )
 from app.db.models import (
     Message, Memory, PendingApproval, SecurityEvent, Session as DBSession, Worker,
@@ -400,6 +403,23 @@ async def _handle_cc_notification(data: dict) -> None:
         app_settings.telegram_allowed_chat_id,
         f"🔔 <b>{title}</b>\n{message}",
     )
+
+
+# --- Transcripción de voz ---
+
+@router.post("/transcribe", response_model=TranscribeResponse)
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    _: str = Depends(require_auth),
+) -> TranscribeResponse:
+    """Transcribe un archivo de audio en español (Whisper-1)."""
+    from app.transcription.whisper import transcribe
+    audio_bytes = await file.read()
+    try:
+        text = await transcribe(audio_bytes, filename=file.filename or "audio.ogg")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return TranscribeResponse(text=text)
 
 
 # --- Agents dashboard ---
