@@ -1,12 +1,17 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { ChatWindow } from "@/components/chat/ChatWindow";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { RightPanel } from "@/components/layout/RightPanel";
 
+const SESSION_KEY = "ao_session_id";
+
 export default function Home() {
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return localStorage.getItem(SESSION_KEY);
+  });
   const [memoryRefresh, setMemoryRefresh] = useState(0);
 
   const handleMemoryUpdate = useCallback(() => {
@@ -15,6 +20,13 @@ export default function Home() {
 
   const handleSelectSession = useCallback((id: string | null) => {
     setSessionId(id);
+    if (id) localStorage.setItem(SESSION_KEY, id);
+    else localStorage.removeItem(SESSION_KEY);
+  }, []);
+
+  const handleSessionId = useCallback((id: string) => {
+    setSessionId(id);
+    localStorage.setItem(SESSION_KEY, id);
   }, []);
 
   return (
@@ -30,7 +42,7 @@ export default function Home() {
         <div className="flex-1 min-h-0">
           <ChatWindow
             sessionId={sessionId}
-            onSessionId={setSessionId}
+            onSessionId={handleSessionId}
             onMemoryUpdate={handleMemoryUpdate}
           />
         </div>

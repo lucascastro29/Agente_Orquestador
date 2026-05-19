@@ -4,10 +4,34 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { MessageBubble, type ChatMessage, type CostDetail, type ToolEvent } from "./MessageBubble";
 import { InputBar } from "./InputBar";
-import { streamChat } from "@/lib/api";
+import { streamChat, getMessages, type MessageEntry } from "@/lib/api";
 
 function randomId() {
   return Math.random().toString(36).slice(2);
+}
+
+function extractText(content: unknown[]): string {
+  return (content ?? [])
+    .filter((b): b is { type: string; text?: string } => typeof b === "object" && b !== null)
+    .filter((b) => b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text as string)
+    .join("");
+}
+
+function entryToMessage(e: MessageEntry): ChatMessage {
+  return {
+    id: e.id,
+    role: e.role as "user" | "assistant",
+    text: extractText(e.content),
+    cost: e.cost_usd != null ? {
+      turn_cost_usd: e.cost_usd,
+      session_cost_usd: 0,
+      input_tokens: e.input_tokens ?? 0,
+      output_tokens: e.output_tokens ?? 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+    } : undefined,
+  };
 }
 
 interface ChatWindowProps {
@@ -19,7 +43,26 @@ interface ChatWindowProps {
 export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindowProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const loadedSessionRef = useRef<string | null>(null);
+
+  // Cargar historial cuando cambia la sesión
+  useEffect(() => {
+    if (!sessionId) {
+      setMessages([]);
+      loadedSessionRef.current = null;
+      return;
+    }
+    if (loadedSessionRef.current === sessionId) return;
+    loadedSessionRef.current = sessionId;
+    setMessages([]);
+    setLoading(true);
+    getMessages(sessionId)
+      .then((entries) => setMessages(entries.map(entryToMessage)))
+      .catch(() => setMessages([]))
+      .finally(() => setLoading(false));
+  }, [sessionId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -110,7 +153,12 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
   return (
     <div className="flex flex-col h-full">
       <ScrollArea className="flex-1 px-4 py-4">
-        {messages.length === 0 && (
+        {loading && (
+          <div className="flex items-center justify-center h-full text-muted-foreground text-sm mt-20">
+            Cargando conversación…
+          </div>
+        )}
+        {!loading && messages.length === 0 && (
           <div className="flex items-center justify-center h-full text-muted-foreground text-sm mt-20">
             Escribí algo para empezar a chatear con el orquestador.
           </div>
