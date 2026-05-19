@@ -1,5 +1,7 @@
+import json
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -283,6 +285,200 @@ class AgentRunner:
             pattern=f"router:security_flag=block category={route.category}",
         )
 
+    # --- Streaming (Fase 3) ---
+
+    async def stream_run_routed(
+        self,
+        message: str,
+        session_id: str,
+        prior_messages: list[dict],
+    ) -> AsyncGenerator[str, None]:
+        """Clasifica y despacha, emitiendo eventos SSE."""
+        route = await MessageRouter().classify(message)
+
+        if route.security_flag == "block":
+            await self._handle_security_block(message, session_id, route)
+            yield _sse({"type": "security_alert", "severity": "critical", "fragment": message[:200]})
+            yield _sse({"type": "done"})
+            return
+
+        agent = self._build_filtered_agent(route) if route.complexity != "low" else None
+        model = "claude-haiku-4-5-20251001" if route.complexity == "low" else (agent.model if agent else "claude-sonnet-4-6")
+        ctx = get_domain_context(route.category)
+
+        # Memoria según dominio
+        memory_entries = await self.memory_svc.get_relevant(
+            limit=10 if route.complexity == "low" else 20,
+            categories=ctx.memory_categories,
+        )
+        memory_text = self.memory_svc.format_for_prompt(memory_entries)
+        system_text = ORCHESTRATOR_SYSTEM + (f"\n\n{memory_text}" if memory_text else "")
+        system_param = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}]
+
+        tools = registry.to_anthropic_tools(agent.allowed_tools if agent else [])
+        messages = list(prior_messages)
+        messages.append({"role": "user", "content": message})
+        max_tokens = 1024 if route.complexity == "low" else 8096
+
+        accumulated_text = ""
+        final_usage = None
+        final_model = model
+
+        async for event in self._stream_loop(
+            model=model,
+            system_param=system_param,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            agent=agent,
+            session_id=session_id,
+        ):
+            if event.get("type") == "_text":
+                accumulated_text += event["text"]
+                yield _sse({"type": "text_delta", "text": event["text"]})
+            elif event.get("type") == "_usage":
+                final_usage = event["usage"]
+                final_model = event["model"]
+            elif event.get("type") == "_memory_updated":
+                yield _sse({"type": "memory_updated", "key": event["key"], "category": event["category"]})
+            elif event.get("type") in ("tool_use_start", "tool_use_result", "approval_needed"):
+                yield _sse(event)
+
+        # Costo y persistencia
+        turn_cost = self.cost_tracker.calculate(final_model, final_usage) if final_usage else 0.0
+        session_cost = await self._update_session_cost(session_id, turn_cost)
+
+        if final_usage:
+            cost_detail = self.cost_tracker.format_footer_web(turn_cost, session_cost, final_usage)
+            yield _sse({"type": "cost_update", "turn_cost": turn_cost, "session_cost": session_cost, "tokens": cost_detail})
+
+        yield _sse({"type": "done"})
+
+    async def _stream_loop(
+        self,
+        model: str,
+        system_param: list[dict],
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: int,
+        agent: AgentConfig | None,
+        session_id: str,
+    ) -> AsyncGenerator[dict, None]:
+        while True:
+            kwargs: dict[str, Any] = dict(
+                model=model,
+                max_tokens=max_tokens,
+                system=system_param,
+                messages=messages,
+            )
+            if tools:
+                kwargs["tools"] = tools
+
+            # Acumular el mensaje completo para el historial
+            content_blocks: list[Any] = []
+            tool_uses: list[Any] = []
+            current_tool_input_json = ""
+            current_tool_name = ""
+            current_tool_id = ""
+            final_stop_reason = "end_turn"
+            final_usage_obj = None
+            final_model_name = model
+
+            async with self.client.messages.stream(**kwargs) as stream:
+                async for raw_event in stream:
+                    etype = raw_event.type
+
+                    if etype == "content_block_start":
+                        block = raw_event.content_block
+                        if block.type == "tool_use":
+                            current_tool_name = block.name
+                            current_tool_id = block.id
+                            current_tool_input_json = ""
+                            yield {"type": "tool_use_start", "tool_name": block.name, "tool_input": {}}
+
+                    elif etype == "content_block_delta":
+                        delta = raw_event.delta
+                        if delta.type == "text_delta":
+                            yield {"type": "_text", "text": delta.text}
+                        elif delta.type == "input_json_delta":
+                            current_tool_input_json += delta.partial_json
+
+                    elif etype == "content_block_stop":
+                        if current_tool_name:
+                            try:
+                                parsed = json.loads(current_tool_input_json) if current_tool_input_json else {}
+                            except json.JSONDecodeError:
+                                parsed = {}
+                            tool_uses.append(
+                                type("ToolUseBlock", (), {
+                                    "type": "tool_use",
+                                    "id": current_tool_id,
+                                    "name": current_tool_name,
+                                    "input": parsed,
+                                })()
+                            )
+                            current_tool_name = ""
+                            current_tool_input_json = ""
+
+                    elif etype == "message_delta":
+                        if hasattr(raw_event, "delta"):
+                            final_stop_reason = getattr(raw_event.delta, "stop_reason", "end_turn") or "end_turn"
+                        if hasattr(raw_event, "usage"):
+                            final_usage_obj = raw_event.usage
+
+                    elif etype == "message_start":
+                        if hasattr(raw_event, "message"):
+                            final_model_name = getattr(raw_event.message, "model", model)
+                            if hasattr(raw_event.message, "usage"):
+                                final_usage_obj = raw_event.message.usage
+
+                if final_usage_obj is None:
+                    msg = await stream.get_final_message()
+                    final_usage_obj = msg.usage
+                    final_stop_reason = msg.stop_reason or "end_turn"
+                    final_model_name = msg.model
+
+            yield {"type": "_usage", "usage": final_usage_obj, "model": final_model_name}
+
+            if final_stop_reason != "tool_use" or not tool_uses:
+                break
+
+            # Ejecutar tools y continuar el loop
+            messages.append({"role": "assistant", "content": [
+                {"type": "tool_use", "id": t.id, "name": t.name, "input": t.input}
+                for t in tool_uses
+            ]})
+
+            tool_results = []
+            for tool_block in tool_uses:
+                result = await self._execute_local_tool(tool_block, agent or _dummy_agent(), session_id)
+
+                if result is None:
+                    # Requiere aprobación
+                    approval_id = await self._create_pending_approval(
+                        session_id=session_id,
+                        tool_use_id=tool_block.id,
+                        tool_name=tool_block.name,
+                        tool_input=tool_block.input,
+                    )
+                    yield {"type": "approval_needed", "approval_id": approval_id,
+                           "tool_name": tool_block.name, "tool_input": tool_block.input}
+                    tool_results.append({"type": "tool_result", "tool_use_id": tool_block.id,
+                                         "content": "Pendiente de aprobación del usuario."})
+                    continue
+
+                yield {"type": "tool_use_result", "tool_name": tool_block.name, "output": result}
+
+                # Detectar si la tool actualizó memoria
+                if tool_block.name == "update_memoria" and isinstance(result, dict) and result.get("ok"):
+                    yield {"type": "_memory_updated", "key": result.get("key", ""), "category": result.get("category", "")}
+
+                tool_results.append({"type": "tool_result", "tool_use_id": tool_block.id,
+                                      "content": json.dumps(result, ensure_ascii=False)})
+
+            messages.append({"role": "user", "content": tool_results})
+            tool_uses = []
+
     async def _build_system_param(self, agent: AgentConfig) -> list[dict]:
         memory_entries = await self.memory_svc.get_relevant(limit=20)
         memory_text = self.memory_svc.format_for_prompt(memory_entries)
@@ -441,3 +637,14 @@ class AgentRunner:
             await self.db.commit()
             return session.total_cost_usd
         return turn_cost
+
+
+# --- Helpers de módulo ---
+
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _dummy_agent() -> "AgentConfig":
+    from app.agents.config import AgentConfig, ORCHESTRATOR_SYSTEM
+    return AgentConfig(id="orchestrator", model="claude-sonnet-4-6", system_prompt=ORCHESTRATOR_SYSTEM)

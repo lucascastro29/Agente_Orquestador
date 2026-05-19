@@ -1,0 +1,126 @@
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const TOKEN = process.env.NEXT_PUBLIC_API_TOKEN ?? "";
+
+function headers(extra: Record<string, string> = {}): Record<string, string> {
+  return { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json", ...extra };
+}
+
+export interface SSEEvent {
+  type:
+    | "session_id"
+    | "text_delta"
+    | "tool_use_start"
+    | "tool_use_result"
+    | "memory_updated"
+    | "cost_update"
+    | "approval_needed"
+    | "security_alert"
+    | "done";
+  [key: string]: unknown;
+}
+
+export interface MemoryEntry {
+  id: string;
+  key: string;
+  value: { text?: string; [k: string]: unknown };
+  category: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SessionEntry {
+  id: string;
+  agent_id: string;
+  title: string | null;
+  channel: string;
+  total_cost_usd: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MessageEntry {
+  id: string;
+  position: number;
+  role: string;
+  content: unknown[];
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
+  created_at: string;
+}
+
+export interface SecurityEventEntry {
+  id: string;
+  severity: string;
+  event_type: string;
+  source: string;
+  raw_content: string;
+  pattern: string | null;
+  action_taken: string;
+  resolved: boolean;
+  created_at: string;
+}
+
+export async function* streamChat(
+  message: string,
+  sessionId: string | null
+): AsyncGenerator<SSEEvent> {
+  const res = await fetch(`${BASE}/api/chat/stream`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ message, session_id: sessionId }),
+  });
+
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try {
+          yield JSON.parse(line.slice(6)) as SSEEvent;
+        } catch {
+          // ignorar líneas malformadas
+        }
+      }
+    }
+  }
+}
+
+export async function getMemory(): Promise<MemoryEntry[]> {
+  const res = await fetch(`${BASE}/api/memory`, { headers: headers() });
+  return res.json();
+}
+
+export async function getSessions(): Promise<SessionEntry[]> {
+  const res = await fetch(`${BASE}/api/sessions`, { headers: headers() });
+  return res.json();
+}
+
+export async function getMessages(sessionId: string): Promise<MessageEntry[]> {
+  const res = await fetch(`${BASE}/api/sessions/${sessionId}/messages`, {
+    headers: headers(),
+  });
+  return res.json();
+}
+
+export async function getSecurityEvents(): Promise<SecurityEventEntry[]> {
+  const res = await fetch(`${BASE}/api/security/events`, { headers: headers() });
+  return res.json();
+}
+
+export async function resolveSecurityEvent(id: string): Promise<void> {
+  await fetch(`${BASE}/api/security/events/${id}/resolve`, {
+    method: "POST",
+    headers: headers(),
+  });
+}

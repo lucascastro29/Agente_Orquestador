@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,6 +71,50 @@ async def chat(
         pending_approval_id=result.pending_approval_id,
         cost=result.cost_detail,
     )
+
+
+# --- Chat streaming (SSE) ---
+
+@router.post("/chat/stream")
+async def chat_stream(
+    req: ChatRequest,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    validator = SecurityValidator(db)
+    check = validator.check_incoming_message(req.message)
+    if check.status == "block":
+        await validator.log_event(
+            severity="critical",
+            event_type="injection_attempt",
+            source="user_message",
+            raw_content=req.message,
+            action_taken="blocked",
+            pattern=check.pattern,
+        )
+        import json as _json
+        async def _blocked():
+            yield f"data: {_json.dumps({'type':'security_alert','severity':'critical','fragment':req.message[:200]})}\n\n"
+            yield f"data: {_json.dumps({'type':'done'})}\n\n"
+        return StreamingResponse(_blocked(), media_type="text/event-stream")
+
+    session = await _get_or_create_session(db, req.session_id, req.agent_id)
+    prior_messages = await _load_prior_messages(db, session.id)
+    runner = AgentRunner(db)
+
+    async def _generate():
+        # Emitir session_id primero para que el cliente lo persista
+        import json as _json
+        yield f"data: {_json.dumps({'type':'session_id','session_id':session.id})}\n\n"
+        async for chunk in runner.stream_run_routed(
+            message=req.message,
+            session_id=session.id,
+            prior_messages=prior_messages,
+        ):
+            yield chunk
+
+    return StreamingResponse(_generate(), media_type="text/event-stream",
+                              headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
 # --- Sessions ---
