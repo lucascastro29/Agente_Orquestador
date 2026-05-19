@@ -16,7 +16,7 @@ FASE 3: [x] Web UI
 FASE 4: [x] Notion como fuente de tareas
 FASE 5: [x] Sub-agentes especializados
 FASE 6: [x] Gmail + Calendar + Watchers
-FASE 7: [ ] Claude Code bridge
+FASE 7: [x] Claude Code bridge
 FASE 8: [ ] Agente Chrome
 
 ```

@@ -304,23 +304,102 @@ async def workers_hook(
     """Recibe eventos de Claude Code (Stop, Notification) vía scripts/notify_stop.py."""
     event_type = payload.get("event_type", "")
     data = payload.get("payload", {})
-    session_id = data.get("session_id") or data.get("cwd", "unknown")
+
+    if event_type == "Stop":
+        return await _handle_cc_stop(db, data)
+    elif event_type == "Notification":
+        await _handle_cc_notification(data)
+        return {"ok": True}
+
+    return {"ok": True, "event_type": event_type}
+
+
+async def _handle_cc_stop(db: AsyncSession, data: dict) -> dict:
+    """Stop event: crea Worker, resume con Haiku y notifica por Telegram."""
+    from app.config import settings as app_settings
+    import anthropic
+
+    cwd = data.get("cwd", "")
+    cc_session_id = data.get("session_id", "")
+    transcript_excerpt = data.get("transcript_excerpt", "")
+
+    # Crear sesión de DB para este evento externo
+    db_session = DBSession(
+        agent_id="external_cc",
+        channel="hook",
+        title=f"cc:{cc_session_id[:8] if cc_session_id else cwd.split('/')[-1]}",
+    )
+    db.add(db_session)
+    await db.commit()
+    await db.refresh(db_session)
 
     mgr = WorkerManager(db)
-    # Crear un worker de tipo "claude_code" como registro del evento externo
     worker = await mgr.create(
-        agent_id="external",
-        session_id=session_id if len(session_id) == 36 else "00000000-0000-0000-0000-000000000000",
+        agent_id="external_cc",
+        session_id=db_session.id,
         type="claude_code",
-        prompt=data.get("prompt", "(hook externo)"),
-        working_dir=data.get("cwd"),
+        prompt=transcript_excerpt[:200] or f"Sesión CC en {cwd}",
+        working_dir=cwd,
     )
-    await mgr.update_status(
-        worker.id,
-        status="done" if event_type == "Stop" else "running",
-        result_summary=data.get("result", ""),
-    )
+    await mgr.update_status(worker.id, status="done",
+                             output=transcript_excerpt,
+                             result_summary=transcript_excerpt[:300])
+
+    # Generar resumen con Haiku si hay transcript
+    summary = ""
+    if transcript_excerpt and app_settings.anthropic_api_key:
+        try:
+            client = anthropic.AsyncAnthropic(api_key=app_settings.anthropic_api_key)
+            resp = await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=256,
+                system=(
+                    "Resumí en 2-3 oraciones qué hizo Claude Code en esta sesión. "
+                    "Formato: qué se hizo, estado final (terminó/quedó pendiente), "
+                    "si hubo errores. Sé directo, sin intro."
+                ),
+                messages=[{"role": "user", "content": transcript_excerpt[:3000]}],
+            )
+            summary = resp.content[0].text.strip()
+        except Exception:
+            summary = transcript_excerpt[:400]
+
+    # Notificar por Telegram
+    if app_settings.telegram_allowed_chat_id:
+        from app.telegram.client import send_message
+        dir_name = cwd.split("/")[-1] if cwd else "?"
+        msg = (
+            f"🏁 <b>Claude Code terminó</b>\n"
+            f"📁 {dir_name}\n"
+            f"🔑 <code>{cc_session_id[:12] if cc_session_id else '?'}</code>\n"
+        )
+        if summary:
+            msg += f"\n📋 <b>Resumen:</b>\n{summary}"
+        else:
+            msg += "\n<i>(sin transcript disponible)</i>"
+        msg += f"\n\n🆔 Worker: <code>{worker.id[:8]}</code>"
+        await send_message(app_settings.telegram_allowed_chat_id, msg)
+
     return {"ok": True, "worker_id": worker.id}
+
+
+async def _handle_cc_notification(data: dict) -> None:
+    """Notification event: reenvía el mensaje directo a Telegram."""
+    from app.config import settings as app_settings
+
+    if not app_settings.telegram_allowed_chat_id:
+        return
+
+    title = data.get("title", "Claude Code")
+    message = data.get("message", "")
+    if not message:
+        return
+
+    from app.telegram.client import send_message
+    await send_message(
+        app_settings.telegram_allowed_chat_id,
+        f"🔔 <b>{title}</b>\n{message}",
+    )
 
 
 # --- Helpers ---
