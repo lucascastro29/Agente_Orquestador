@@ -46,6 +46,12 @@ registry = ToolRegistry()
 
 # --- Handlers de memoria (se registran al importar este módulo) ---
 
+_MEMORY_CATEGORIES = [
+    "objetivo_actual", "proyecto", "preferencia", "persona",
+    "recordatorio", "nota_libre", "sesion_pasada",
+]
+
+
 async def _handle_get_memoria(memory_service: Any, categories: list[str] | None = None, limit: int = 20) -> dict:
     entries = await memory_service.get_relevant(limit=limit, categories=categories)
     return {"memoria": memory_service.format_for_prompt(entries)}
@@ -74,8 +80,7 @@ registry.register(LocalTool(
         "properties": {
             "categories": {
                 "type": "array",
-                "items": {"type": "string",
-                          "enum": ["objetivo_actual", "proyecto", "preferencia", "persona", "recordatorio", "nota_libre"]},
+                "items": {"type": "string", "enum": _MEMORY_CATEGORIES},
                 "description": "Categorías a consultar. Si se omite, devuelve las 20 entradas más recientes.",
             },
             "limit": {"type": "integer", "default": 20},
@@ -93,10 +98,7 @@ registry.register(LocalTool(
         "properties": {
             "key":      {"type": "string", "description": "Identificador único de la entrada."},
             "value":    {"type": "string", "description": "Contenido a guardar."},
-            "category": {
-                "type": "string",
-                "enum": ["objetivo_actual", "proyecto", "preferencia", "persona", "recordatorio", "nota_libre"],
-            },
+            "category": {"type": "string", "enum": _MEMORY_CATEGORIES},
         },
         "required": ["key", "value", "category"],
     },
@@ -111,8 +113,7 @@ registry.register(LocalTool(
         "type": "object",
         "properties": {
             "key":      {"type": "string"},
-            "category": {"type": "string",
-                         "enum": ["objetivo_actual", "proyecto", "preferencia", "persona", "recordatorio", "nota_libre"]},
+            "category": {"type": "string", "enum": _MEMORY_CATEGORIES},
         },
         "required": ["key", "category"],
     },
@@ -385,6 +386,363 @@ async def _handle_create_subagent(
         "max_duration_minutes": sub_cfg.max_duration_minutes,
     }
 
+
+# --- Tool: remember_session (Fase 9) ---
+
+async def _handle_remember_session(db: Any, session_id: str, label: str | None = None) -> dict:
+    """Carga mensajes de la sesión actual, los resume con Haiku y guarda en memoria."""
+    from app.db.models import Message
+    from sqlalchemy import select
+    import anthropic as _anthropic
+    from app.config import settings
+    from app.memory.service import MemoryService
+
+    result = await db.execute(
+        select(Message).where(Message.session_id == session_id).order_by(Message.position.asc())
+    )
+    messages = result.scalars().all()
+    if not messages:
+        return {"error": "No hay mensajes en esta sesión."}
+
+    conv_lines = []
+    for m in messages:
+        role = "Usuario" if m.role == "user" else "Orquestador"
+        text = ""
+        if isinstance(m.content, list):
+            for block in m.content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text += block.get("text", "")
+        elif isinstance(m.content, str):
+            text = m.content
+        if text.strip():
+            conv_lines.append(f"{role}: {text[:300]}")
+
+    conv_text = "\n".join(conv_lines[:40])
+
+    client = _anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    try:
+        resp = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            system="Resumí esta conversación en 3-5 puntos clave. Solo lo más importante. Bullet points en español.",
+            messages=[{"role": "user", "content": conv_text}],
+        )
+        summary = resp.content[0].text.strip()
+    except Exception as exc:
+        summary = f"Sesión con {len(messages)} mensajes. (Error al resumir: {exc})"
+
+    svc = MemoryService(db)
+    key = label or f"sesion_{session_id[:8]}"
+    await svc.upsert(key=key, value={"text": summary, "session_id": session_id}, category="sesion_pasada")
+    return {"ok": True, "key": key, "summary": summary[:300]}
+
+
+registry.register(LocalTool(
+    name="remember_session",
+    description=(
+        "Guarda un resumen de la sesión actual en la memoria persistente con categoría 'sesion_pasada'. "
+        "Usalo cuando el usuario pida explícitamente recordar esta conversación o sesión."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "description": "Nombre descriptivo para identificar esta sesión. Ej: 'sesion_planning_mayo'. Opcional."},
+        },
+    },
+    handler=_handle_remember_session,
+    requires_confirmation=False,
+))
+
+
+# --- Tools: Gmail + Calendar activos (Fase 9) ---
+
+async def _handle_read_gmail_inbox(max_results: int = 10, only_unread: bool = True) -> dict:
+    from app.config import settings
+    if not settings.gmail_oauth_token:
+        return {"error": "Gmail no configurado (GMAIL_OAUTH_TOKEN vacío en .env)"}
+    import httpx
+    headers = {"Authorization": f"Bearer {settings.gmail_oauth_token}"}
+    q = "is:unread" if only_unread else ""
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+            headers=headers,
+            params={"maxResults": max_results, "q": q},
+        )
+        if r.status_code != 200:
+            return {"error": f"Gmail API {r.status_code}: {r.text[:200]}"}
+        msg_ids = [m["id"] for m in r.json().get("messages", [])]
+
+        emails = []
+        for mid in msg_ids:
+            mr = await client.get(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}",
+                headers=headers,
+                params={"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]},
+            )
+            if mr.status_code == 200:
+                data = mr.json()
+                hdrs = {h["name"]: h["value"] for h in data.get("payload", {}).get("headers", [])}
+                emails.append({
+                    "id": mid,
+                    "from": hdrs.get("From", ""),
+                    "subject": hdrs.get("Subject", ""),
+                    "date": hdrs.get("Date", ""),
+                    "snippet": data.get("snippet", ""),
+                })
+    return {"emails": emails, "count": len(emails)}
+
+
+registry.register(LocalTool(
+    name="read_gmail_inbox",
+    description="Lee los emails recientes del inbox de Gmail. Requiere GMAIL_OAUTH_TOKEN configurado.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "max_results": {"type": "integer", "default": 10, "description": "Máximo de emails a retornar."},
+            "only_unread": {"type": "boolean", "default": True, "description": "Solo no leídos."},
+        },
+    },
+    handler=_handle_read_gmail_inbox,
+    requires_confirmation=False,
+))
+
+
+async def _handle_read_calendar_events(max_results: int = 10, days_ahead: int = 7) -> dict:
+    from app.config import settings
+    if not settings.calendar_oauth_token:
+        return {"error": "Calendar no configurado (CALENDAR_OAUTH_TOKEN vacío en .env)"}
+    import httpx
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    time_max = now + timedelta(days=days_ahead)
+    headers = {"Authorization": f"Bearer {settings.calendar_oauth_token}"}
+    params = {
+        "timeMin": now.isoformat(),
+        "timeMax": time_max.isoformat(),
+        "maxResults": max_results,
+        "singleEvents": "true",
+        "orderBy": "startTime",
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(
+            "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+            headers=headers,
+            params=params,
+        )
+        if r.status_code != 200:
+            return {"error": f"Calendar API {r.status_code}: {r.text[:200]}"}
+        events = []
+        for ev in r.json().get("items", []):
+            start = ev.get("start", {})
+            events.append({
+                "id": ev.get("id"),
+                "title": ev.get("summary", "Sin título"),
+                "start": start.get("dateTime") or start.get("date", ""),
+                "location": ev.get("location", ""),
+                "attendees": [a.get("email") for a in ev.get("attendees", [])],
+                "description": (ev.get("description") or "")[:200],
+            })
+    return {"events": events, "count": len(events)}
+
+
+registry.register(LocalTool(
+    name="read_calendar_events",
+    description="Lee eventos próximos del Google Calendar. Requiere CALENDAR_OAUTH_TOKEN configurado.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "max_results": {"type": "integer", "default": 10},
+            "days_ahead":  {"type": "integer", "default": 7, "description": "Días hacia adelante a consultar."},
+        },
+    },
+    handler=_handle_read_calendar_events,
+    requires_confirmation=False,
+))
+
+
+# --- Tool: notion_update_task ---
+
+async def _handle_notion_update_task(
+    task_id: str,
+    status: str | None = None,
+    description: str | None = None,
+) -> dict:
+    from app.notion.task_sync import NotionTaskSync
+    sync = NotionTaskSync()
+    return await sync.update_task(task_id=task_id, status=status, description=description)
+
+
+registry.register(LocalTool(
+    name="notion_update_task",
+    description="Actualiza el estado y/o descripción de una tarea existente en Notion dado su ID.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "task_id":     {"type": "string", "description": "ID de la página Notion (UUID)."},
+            "status":      {"type": "string", "description": "Nuevo estado. Ej: 'En progreso', 'Completado'."},
+            "description": {"type": "string", "description": "Nuevo contenido de descripción."},
+        },
+        "required": ["task_id"],
+    },
+    handler=_handle_notion_update_task,
+    requires_confirmation=True,
+))
+
+
+# --- Tools: Tareas Programadas (Fase 9) ---
+
+async def _handle_schedule_task(
+    db: Any,
+    name: str,
+    cron_expr: str,
+    action_type: str,
+    action_config: dict,
+    description: str | None = None,
+) -> dict:
+    from croniter import croniter, CroniterBadCronError
+    from datetime import datetime, timezone
+    from app.db.models import ScheduledTask
+
+    now = datetime.now(timezone.utc)
+    try:
+        itr = croniter(cron_expr, now)
+        next_run = itr.get_next(datetime)
+    except (CroniterBadCronError, Exception) as exc:
+        return {"error": f"Expresión cron inválida '{cron_expr}': {exc}"}
+
+    valid_types = ("message", "run_claude_code", "create_subagent")
+    if action_type not in valid_types:
+        return {"error": f"action_type debe ser uno de: {valid_types}"}
+
+    task = ScheduledTask(
+        name=name,
+        description=description,
+        cron_expr=cron_expr,
+        action_type=action_type,
+        action_config=action_config,
+        next_run_at=next_run,
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+    return {
+        "id": task.id,
+        "name": task.name,
+        "cron_expr": cron_expr,
+        "next_run_at": next_run.isoformat(),
+        "action_type": action_type,
+    }
+
+
+async def _handle_list_scheduled_tasks(db: Any) -> dict:
+    from app.db.models import ScheduledTask
+    from sqlalchemy import select
+    result = await db.execute(select(ScheduledTask).order_by(ScheduledTask.created_at.desc()))
+    tasks = result.scalars().all()
+    return {
+        "tasks": [
+            {
+                "id": t.id,
+                "name": t.name,
+                "cron_expr": t.cron_expr,
+                "enabled": t.enabled,
+                "action_type": t.action_type,
+                "next_run_at": t.next_run_at.isoformat() if t.next_run_at else None,
+                "last_run_at": t.last_run_at.isoformat() if t.last_run_at else None,
+                "run_count": t.run_count,
+                "last_error": t.last_error,
+            }
+            for t in tasks
+        ]
+    }
+
+
+async def _handle_delete_scheduled_task(db: Any, task_id: str) -> dict:
+    from app.db.models import ScheduledTask
+    from sqlalchemy import select, delete as sa_delete
+    result = await db.execute(select(ScheduledTask).where(ScheduledTask.id == task_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        return {"error": f"Tarea '{task_id}' no encontrada"}
+    await db.execute(sa_delete(ScheduledTask).where(ScheduledTask.id == task_id))
+    await db.commit()
+    return {"ok": True, "deleted": task.name}
+
+
+async def _handle_toggle_scheduled_task(db: Any, task_id: str, enabled: bool) -> dict:
+    from app.db.models import ScheduledTask
+    from sqlalchemy import select
+    result = await db.execute(select(ScheduledTask).where(ScheduledTask.id == task_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        return {"error": f"Tarea '{task_id}' no encontrada"}
+    task.enabled = enabled
+    await db.commit()
+    return {"ok": True, "name": task.name, "enabled": enabled}
+
+
+registry.register(LocalTool(
+    name="schedule_task",
+    description=(
+        "Crea una tarea programada con expresión cron. "
+        "action_type='message': envía un mensaje al orquestador (action_config: {message: str}). "
+        "action_type='run_claude_code': lanza Claude Code (action_config: {prompt, working_dir}). "
+        "action_type='create_subagent': instancia sub-agente (action_config: {type, name, objective, working_dir?}). "
+        "Cron examples: '0 9 * * 1-5' = lunes-viernes 9am | '0 8 * * *' = todos los días 8am."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "name":         {"type": "string", "description": "Nombre descriptivo de la tarea."},
+            "description":  {"type": "string", "description": "Para qué sirve esta tarea programada."},
+            "cron_expr":    {"type": "string", "description": "Expresión cron estándar (5 campos)."},
+            "action_type":  {"type": "string", "enum": ["message", "run_claude_code", "create_subagent"]},
+            "action_config": {"type": "object", "description": "Config según action_type."},
+        },
+        "required": ["name", "cron_expr", "action_type", "action_config"],
+    },
+    handler=_handle_schedule_task,
+    requires_confirmation=True,
+))
+
+registry.register(LocalTool(
+    name="list_scheduled_tasks",
+    description="Lista todas las tareas programadas con su próxima ejecución y estado.",
+    input_schema={"type": "object", "properties": {}},
+    handler=_handle_list_scheduled_tasks,
+    requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="delete_scheduled_task",
+    description="Elimina una tarea programada por su ID.",
+    input_schema={
+        "type": "object",
+        "properties": {"task_id": {"type": "string"}},
+        "required": ["task_id"],
+    },
+    handler=_handle_delete_scheduled_task,
+    requires_confirmation=True,
+))
+
+registry.register(LocalTool(
+    name="toggle_scheduled_task",
+    description="Activa o desactiva una tarea programada sin eliminarla.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string"},
+            "enabled": {"type": "boolean"},
+        },
+        "required": ["task_id", "enabled"],
+    },
+    handler=_handle_toggle_scheduled_task,
+    requires_confirmation=False,
+))
+
+
+# --- Sub-agentes (ya registrado abajo, no duplicar) ---
 
 registry.register(LocalTool(
     name="create_subagent",

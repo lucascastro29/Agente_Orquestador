@@ -22,6 +22,10 @@ celery_app.conf.update(
             "task": "watchers.check_calendar",
             "schedule": crontab(minute="*/30"),
         },
+        "run-scheduled-tasks-every-min": {
+            "task": "workers.run_due_scheduled_tasks",
+            "schedule": crontab(minute="*"),
+        },
     },
     # Registrar módulos de tasks para que beat los encuentre
     imports=[

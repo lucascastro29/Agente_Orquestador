@@ -3,6 +3,10 @@ from typing import Any
 from pydantic import BaseModel
 
 
+class TTSSynthesizeRequest(BaseModel):
+    text: str
+
+
 class ChatRequest(BaseModel):
     agent_id: str = "orchestrator"
     message: str
@@ -122,3 +126,18 @@ class ScheduleTaskOut(BaseModel):
     schedule: str
     enabled: bool
     last_checked_at: datetime | None
+
+
+class ScheduledTaskOut(BaseModel):
+    id: str
+    name: str
+    description: str | None
+    cron_expr: str
+    enabled: bool
+    action_type: str
+    action_config: dict
+    next_run_at: datetime | None
+    last_run_at: datetime | None
+    run_count: int
+    last_error: str | None
+    created_at: datetime

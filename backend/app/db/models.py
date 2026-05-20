@@ -109,6 +109,26 @@ class SecurityEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class ScheduledTask(Base):
+    """Tarea programada por el orquestador con expresión cron."""
+    __tablename__ = "scheduled_tasks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cron_expr: Mapped[str] = mapped_column(String, nullable=False)   # "0 9 * * 1-5"
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # "message" | "run_claude_code" | "create_subagent"
+    action_type: Mapped[str] = mapped_column(String, nullable=False)
+    action_config: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    run_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class WatcherState(Base):
     """Persiste el cursor de cada watcher para no reprocesar eventos."""
     __tablename__ = "watcher_state"

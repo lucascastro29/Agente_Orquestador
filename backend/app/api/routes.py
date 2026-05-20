@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.config import get_agent
@@ -12,11 +12,12 @@ from fastapi import File, UploadFile
 
 from app.api.schemas import (
     AgentOut, ApprovalAction, ApprovalOut, ChatRequest, ChatResponse,
-    MemoryIn, MemoryOut, MessageOut, ScheduleTaskOut, SecurityEventOut,
-    SessionOut, TranscribeResponse, WorkerOut,
+    MemoryIn, MemoryOut, MessageOut, ScheduleTaskOut, ScheduledTaskOut, SecurityEventOut,
+    SessionOut, TranscribeResponse, TTSSynthesizeRequest, WorkerOut,
 )
 from app.db.models import (
-    Message, Memory, PendingApproval, SecurityEvent, Session as DBSession, Worker,
+    Message, Memory, PendingApproval, ScheduledTask, SecurityEvent, Session as DBSession,
+    ToolTrace, Worker,
 )
 from app.db.session import AsyncSessionLocal
 from app.memory.service import MemoryService
@@ -53,8 +54,7 @@ async def chat(
             blocked_reason="Mensaje bloqueado por política de seguridad.",
         )
 
-    # Obtener o crear sesión (agent_id default = orchestrator)
-    session = await _get_or_create_session(db, req.session_id, req.agent_id)
+    session = await _get_or_create_session(db, req.session_id, req.agent_id, first_message=req.message)
 
     # Historial
     prior_messages = await _load_prior_messages(db, session.id)
@@ -102,7 +102,7 @@ async def chat_stream(
             yield f"data: {_json.dumps({'type':'done'})}\n\n"
         return StreamingResponse(_blocked(), media_type="text/event-stream")
 
-    session = await _get_or_create_session(db, req.session_id, req.agent_id)
+    session = await _get_or_create_session(db, req.session_id, req.agent_id, first_message=req.message)
     prior_messages = await _load_prior_messages(db, session.id)
     runner = AgentRunner(db)
 
@@ -144,6 +144,27 @@ async def list_messages(
         .order_by(Message.position.asc())
     )
     return [_message_out(m) for m in result.scalars().all()]
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    result = await db.execute(select(DBSession).where(DBSession.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    # Limpiar self-ref FK de workers antes de borrarlos
+    await db.execute(update(Worker).where(Worker.session_id == session_id).values(parent_id=None))
+    await db.execute(delete(Worker).where(Worker.session_id == session_id))
+    await db.execute(delete(Message).where(Message.session_id == session_id))
+    await db.execute(delete(PendingApproval).where(PendingApproval.session_id == session_id))
+    await db.execute(delete(ToolTrace).where(ToolTrace.session_id == session_id))
+    await db.delete(session)
+    await db.commit()
+    return {"ok": True}
 
 
 # --- Memory ---
@@ -422,6 +443,58 @@ async def transcribe_audio(
     return TranscribeResponse(text=text)
 
 
+# --- Tareas programadas ---
+
+def _scheduled_task_out(t: ScheduledTask) -> ScheduledTaskOut:
+    return ScheduledTaskOut(
+        id=t.id, name=t.name, description=t.description, cron_expr=t.cron_expr,
+        enabled=t.enabled, action_type=t.action_type, action_config=t.action_config,
+        next_run_at=t.next_run_at, last_run_at=t.last_run_at,
+        run_count=t.run_count, last_error=t.last_error, created_at=t.created_at,
+    )
+
+
+@router.get("/scheduled-tasks", response_model=list[ScheduledTaskOut])
+async def list_scheduled_tasks(
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> list[ScheduledTaskOut]:
+    result = await db.execute(select(ScheduledTask).order_by(ScheduledTask.created_at.desc()))
+    return [_scheduled_task_out(t) for t in result.scalars().all()]
+
+
+@router.delete("/scheduled-tasks/{task_id}")
+async def delete_scheduled_task(
+    task_id: str,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    result = await db.execute(select(ScheduledTask).where(ScheduledTask.id == task_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Scheduled task not found")
+    await db.execute(delete(ScheduledTask).where(ScheduledTask.id == task_id))
+    await db.commit()
+    return {"ok": True}
+
+
+@router.patch("/scheduled-tasks/{task_id}/toggle")
+async def toggle_scheduled_task(
+    task_id: str,
+    body: dict,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> ScheduledTaskOut:
+    result = await db.execute(select(ScheduledTask).where(ScheduledTask.id == task_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Scheduled task not found")
+    task.enabled = bool(body.get("enabled", task.enabled))
+    await db.commit()
+    await db.refresh(task)
+    return _scheduled_task_out(task)
+
+
 # --- Agents dashboard ---
 
 @router.get("/agents", response_model=list[AgentOut])
@@ -517,14 +590,16 @@ async def list_schedule(
 # --- Helpers ---
 
 async def _get_or_create_session(
-    db: AsyncSession, session_id: str | None, agent_id: str
+    db: AsyncSession, session_id: str | None, agent_id: str,
+    first_message: str | None = None,
 ) -> DBSession:
     if session_id:
         result = await db.execute(select(DBSession).where(DBSession.id == session_id))
         session = result.scalar_one_or_none()
         if session:
             return session
-    session = DBSession(agent_id=agent_id, channel="web")
+    title = first_message[:60].strip() if first_message else None
+    session = DBSession(agent_id=agent_id, channel="web", title=title)
     db.add(session)
     await db.commit()
     await db.refresh(session)
@@ -585,3 +660,17 @@ def _worker_out(w: Worker) -> WorkerOut:
         notion_task_id=w.notion_task_id, error=w.error, notified=w.notified,
         created_at=w.created_at, started_at=w.started_at, finished_at=w.finished_at,
     )
+
+
+# --- TTS ---
+
+@router.post("/tts/synthesize")
+async def tts_synthesize(
+    req: TTSSynthesizeRequest,
+    _: str = Depends(require_auth),
+) -> Response:
+    from app.tts.service import tts_service
+    wav = await tts_service.synthesize_wav(req.text)
+    if not wav:
+        raise HTTPException(status_code=503, detail="TTS no disponible o texto vacío")
+    return Response(content=wav, media_type="audio/wav")

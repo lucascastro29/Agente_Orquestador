@@ -122,6 +122,122 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
         await _notify_telegram(session_id, f"❌ Worker {worker_id[:8]} falló: {exc}")
 
 
+@celery_app.task(name="workers.run_due_scheduled_tasks")
+def run_due_scheduled_tasks() -> None:
+    asyncio.run(_run_due_scheduled_tasks_async())
+
+
+async def _run_due_scheduled_tasks_async() -> None:
+    from datetime import datetime, timezone
+    from croniter import croniter
+    from app.db.session import AsyncSessionLocal
+    from app.db.models import ScheduledTask
+    from sqlalchemy import select
+
+    now = datetime.now(timezone.utc)
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ScheduledTask)
+            .where(ScheduledTask.enabled.is_(True))
+            .where(ScheduledTask.next_run_at <= now)
+        )
+        due_tasks = list(result.scalars().all())
+
+    for task in due_tasks:
+        error_str = None
+        try:
+            await _execute_scheduled_task_action(task.id, task.action_type, task.action_config)
+        except Exception as exc:
+            error_str = str(exc)
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(ScheduledTask).where(ScheduledTask.id == task.id))
+            t = result.scalar_one_or_none()
+            if t:
+                t.last_run_at = now
+                t.run_count = (t.run_count or 0) + 1
+                t.last_error = error_str
+                try:
+                    itr = croniter(t.cron_expr, now)
+                    t.next_run_at = itr.get_next(datetime)
+                except Exception:
+                    t.enabled = False
+                await db.commit()
+
+
+async def _execute_scheduled_task_action(task_id: str, action_type: str, action_config: dict) -> None:
+    from app.db.session import AsyncSessionLocal
+    from app.agents.runner import AgentRunner
+    from app.db.models import Session as DBSession
+
+    if action_type == "message":
+        message = action_config.get("message", "")
+        if not message:
+            return
+        async with AsyncSessionLocal() as db:
+            session = DBSession(agent_id="orchestrator", channel="scheduled", title=f"scheduled:{task_id[:8]}")
+            db.add(session)
+            await db.commit()
+            await db.refresh(session)
+            runner = AgentRunner(db)
+            result = await runner.run_routed(
+                message=message,
+                session_id=session.id,
+                prior_messages=[],
+                channel="telegram",
+            )
+        if result.text:
+            from app.config import settings
+            from app.telegram.client import send_message
+            if settings.telegram_allowed_chat_id:
+                await send_message(settings.telegram_allowed_chat_id, result.text)
+
+    elif action_type == "run_claude_code":
+        prompt = action_config.get("prompt", "")
+        working_dir = action_config.get("working_dir", "")
+        if not prompt or not working_dir:
+            return
+        async with AsyncSessionLocal() as db:
+            session = DBSession(agent_id="orchestrator", channel="scheduled", title=f"cc_scheduled:{task_id[:8]}")
+            db.add(session)
+            await db.commit()
+            await db.refresh(session)
+            from app.workers.manager import WorkerManager
+            mgr = WorkerManager(db)
+            worker = await mgr.create(
+                agent_id="orchestrator",
+                session_id=session.id,
+                type="claude_code",
+                prompt=prompt,
+                working_dir=working_dir,
+            )
+        execute_claude_code.delay(worker.id, prompt, working_dir)
+
+    elif action_type == "create_subagent":
+        sub_type = action_config.get("type", "sub_dev")
+        name = action_config.get("name", "sub_programado")
+        objective = action_config.get("objective", "")
+        working_dir = action_config.get("working_dir")
+        if not objective:
+            return
+        async with AsyncSessionLocal() as db:
+            session = DBSession(agent_id=sub_type, channel="scheduled", title=f"sub_scheduled:{task_id[:8]}")
+            db.add(session)
+            await db.commit()
+            await db.refresh(session)
+            from app.workers.manager import WorkerManager
+            mgr = WorkerManager(db)
+            worker = await mgr.create(
+                agent_id=sub_type,
+                session_id=session.id,
+                type="subagent",
+                prompt=f"[{name}] {objective}",
+                working_dir=working_dir,
+            )
+        execute_subagent.delay(worker.id, sub_type, objective, working_dir, session.id)
+
+
 @celery_app.task(name="workers.execute_subagent", bind=True)
 def execute_subagent(self, worker_id: str, subagent_type: str, objective: str,
                      working_dir: str | None, session_id: str):
