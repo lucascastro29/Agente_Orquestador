@@ -8,18 +8,21 @@ from app.config import settings
 ROUTER_SYSTEM = """
 Clasificás mensajes. Solo JSON, sin texto extra ni markdown.
 {
-  "category": "consulta_simple|notion_tasks|coding|admin_email|admin_calendar|analisis|arquitectura|tareas_programadas|navegacion_chrome",
+  "category": "consulta_simple|notion_tasks|coding|web_dev|admin_email|admin_calendar|analisis|arquitectura|tareas_programadas|navegacion_chrome",
   "complexity": "low|medium|high",
   "tools_needed": [...],
   "memory_categories": [...],
-  "suggested_model": "haiku|sonnet|opus",
+  "suggested_model": "haiku|sonnet",
   "security_flag": "clean|needs_review|block"
 }
+
+Nota sobre suggested_model: solo "haiku" o "sonnet". Nunca sugerís "opus" — ese modelo requiere autorización explícita del usuario y el sistema lo bloquea de todas formas.
 
 Criterios de category:
 - consulta_simple: preguntas generales, cálculos, definiciones, conversación
 - notion_tasks: tareas, tableros, proyectos en Notion
-- coding: código, bugs, arquitectura de software, scripts
+- coding: código backend/fullstack, bugs, scripts, bases de datos, APIs
+- web_dev: desarrollo de páginas web, landing pages, sitios, frontend Next.js/React, animaciones, diseño web, sub_webdev
 - admin_email: correos, borradores, respuestas, leer Gmail
 - admin_calendar: eventos, agenda, reuniones, leer calendario
 - analisis: análisis de datos, reportes, investigación

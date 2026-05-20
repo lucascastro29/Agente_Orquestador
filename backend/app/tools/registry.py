@@ -362,7 +362,18 @@ async def _handle_create_subagent(
     notion_task_id: str | None = None,
     notify_on_done: bool = True,  # noqa: ARG001 — reservado para uso futuro
 ) -> dict:
-    from app.agents.subagent_registry import get_subagent
+    from app.agents.subagent_registry import get_subagent, SUB_AGENTS
+
+    # Validar type explícitamente antes de hacer nada
+    if type not in SUB_AGENTS:
+        return {
+            "error": (
+                f"Tipo de sub-agente inválido: '{type}'. "
+                f"Tipos válidos: {list(SUB_AGENTS.keys())}. "
+                "Usá el parámetro 'type' con uno de esos valores exactos."
+            )
+        }
+
     sub_cfg = get_subagent(type)
 
     worker = await worker_manager.create(
@@ -374,16 +385,43 @@ async def _handle_create_subagent(
         notion_task_id=notion_task_id,
     )
 
+    # Chequeo obligatorio: verificar que el worker quedó guardado en DB antes de reportar éxito
+    import asyncio as _asyncio
+    await _asyncio.sleep(0.1)  # flush del commit
+    worker_check = await worker_manager.get_by_id(worker.id)
+    if worker_check is None:
+        return {
+            "error": (
+                f"El worker del sub-agente '{name}' no se pudo persistir en DB. "
+                "El sub-agente NO fue lanzado. Intentá de nuevo."
+            )
+        }
+
     from app.workers.tasks import execute_subagent
     execute_subagent.delay(worker.id, type, objective, working_dir, session_id)
 
+    # Verificar que Celery aceptó la tarea (comprobación de conexión a Redis)
+    try:
+        from app.worker import celery_app
+        celery_app.control.ping(timeout=1)
+        celery_ok = True
+    except Exception:
+        celery_ok = False
+
     return {
+        "ok": True,
         "worker_id": worker.id,
+        "worker_status": worker_check.status,
         "subagent_type": type,
         "name": name,
-        "status": "pending",
-        "max_workers": sub_cfg.max_workers,
-        "max_duration_minutes": sub_cfg.max_duration_minutes,
+        "objective_preview": objective[:120],
+        "working_dir": working_dir,
+        "celery_broker_ok": celery_ok,
+        "message": (
+            f"Sub-agente '{name}' (type={type}) lanzado correctamente. "
+            f"Worker ID: {worker.id}. "
+            f"Podés monitorear con get_workers_status()."
+        ),
     }
 
 
@@ -784,29 +822,265 @@ registry.register(LocalTool(
 registry.register(LocalTool(
     name="create_subagent",
     description=(
-        "Instancia un sub-agente especializado para manejar una tarea compleja "
-        "que requiere múltiples Claude Code sessions coordinadas. "
-        "sub_dev: desarrollo técnico (hasta 5 workers). "
-        "sub_analista: análisis de datos e investigación (hasta 3 workers)."
+        "Instancia un sub-agente especializado. "
+        "PARÁMETROS OBLIGATORIOS: 'type' (elige el agente) + 'name' (etiqueta descriptiva) + 'objective' (qué hacer). "
+        "NO existen parámetros como max_workers, duration_minutes, policy ni model — no los inventes. "
+        "TIPOS DISPONIBLES:\n"
+        "  • type='sub_webdev': Frontend Engineer Next.js+Tailwind+animaciones Apple-style. "
+        "Usalo para páginas web, landing pages, scroll effects, video scroll-driven. "
+        "Siempre incluir en objective: ruta del repo en /workspace + estética buscada + feature a implementar.\n"
+        "  • type='sub_dev': Dev backend/fullstack general. Para código de servidor, APIs, scripts, migraciones.\n"
+        "  • type='sub_analista': Analista datos/investigación. Para reportes, análisis, síntesis de información.\n"
+        "EJEMPLO CORRECTO: create_subagent(type='sub_webdev', name='landing-portfolioNext', "
+        "objective='Implementá hero section con scroll animation en /workspace/portfolioNext. Estética Linear.', "
+        "working_dir='/workspace/portfolioNext')"
     ),
     input_schema={
         "type": "object",
         "properties": {
             "type": {
                 "type": "string",
-                "enum": ["sub_dev", "sub_analista"],
-                "description": "Tipo de sub-agente a instanciar.",
+                "enum": ["sub_webdev", "sub_dev", "sub_analista"],
+                "description": "REQUERIDO. Tipo de sub-agente. 'sub_webdev' para web/frontend, 'sub_dev' para backend/general, 'sub_analista' para análisis.",
             },
-            "name": {"type": "string", "description": "Nombre descriptivo para identificar este sub-agente."},
-            "objective": {"type": "string", "description": "Objetivo completo que debe lograr el sub-agente."},
-            "working_dir": {"type": "string", "description": "Directorio de trabajo (debe estar en ALLOWED_WORKING_DIRS)."},
-            "notion_task_id": {"type": "string", "description": "ID de tarea Notion para actualizar al completar."},
+            "name": {
+                "type": "string",
+                "description": "REQUERIDO. Etiqueta descriptiva para identificar esta instancia. Ej: 'landing-portfolioNext', 'analisis-inbox-mayo'.",
+            },
+            "objective": {
+                "type": "string",
+                "description": "REQUERIDO. Objetivo completo y detallado que debe lograr el sub-agente. Incluir todo el contexto necesario.",
+            },
+            "working_dir": {
+                "type": "string",
+                "description": "Directorio de trabajo dentro de ALLOWED_WORKING_DIRS. Para sub_webdev: ruta al repo. Ej: '/workspace/portfolioNext'.",
+            },
+            "notion_task_id": {
+                "type": "string",
+                "description": "ID de página Notion para actualizar al completar (opcional).",
+            },
             "notify_on_done": {"type": "boolean", "default": True},
         },
         "required": ["type", "name", "objective"],
     },
     handler=_handle_create_subagent,
     requires_confirmation=False,
+))
+
+
+# --- Playbooks (Fase 10) ---
+
+async def _handle_save_playbook(
+    db: Any,
+    name: str,
+    steps: list,
+    description: str | None = None,
+    tags: list | None = None,
+) -> dict:
+    from app.db.models import Playbook
+    p = Playbook(name=name, description=description, steps=steps, tags=tags or [])
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+    return {"ok": True, "playbook_id": p.id, "name": p.name, "steps_count": len(steps)}
+
+
+async def _handle_list_playbooks(db: Any) -> dict:
+    from app.db.models import Playbook
+    from sqlalchemy import select
+    result = await db.execute(select(Playbook).order_by(Playbook.created_at.desc()))
+    playbooks = result.scalars().all()
+    return {
+        "playbooks": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "description": p.description,
+                "steps_count": len(p.steps or []),
+                "tags": p.tags or [],
+                "run_count": p.run_count,
+                "last_run_at": p.last_run_at.isoformat() if p.last_run_at else None,
+            }
+            for p in playbooks
+        ]
+    }
+
+
+async def _handle_get_playbook(db: Any, playbook_id: str) -> dict:
+    from app.db.models import Playbook
+    from sqlalchemy import select
+    result = await db.execute(select(Playbook).where(Playbook.id == playbook_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        return {"error": f"Playbook '{playbook_id}' no encontrado"}
+    return {"id": p.id, "name": p.name, "description": p.description, "steps": p.steps, "tags": p.tags}
+
+
+async def _handle_run_playbook(db: Any, playbook_id: str) -> dict:
+    """Devuelve los pasos al orquestador para que los ejecute en orden."""
+    from app.db.models import Playbook
+    from sqlalchemy import select
+    from datetime import datetime, timezone
+    result = await db.execute(select(Playbook).where(Playbook.id == playbook_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        return {"error": f"Playbook '{playbook_id}' no encontrado"}
+    p.run_count = (p.run_count or 0) + 1
+    p.last_run_at = datetime.now(timezone.utc)
+    await db.commit()
+    steps_text = "\n".join(
+        f"{i+1}. [{s.get('label', s.get('tool', ''))}] "
+        f"Llamá tool='{s['tool']}' con params={s.get('params', {})}"
+        for i, s in enumerate(p.steps or [])
+    )
+    return {
+        "playbook": p.name,
+        "description": p.description,
+        "steps_to_execute": p.steps,
+        "instructions": (
+            f"Ejecutá los siguientes pasos EN ORDEN usando tus tools. "
+            f"Reportá el resultado de cada uno antes de pasar al siguiente.\n\n{steps_text}"
+        ),
+    }
+
+
+async def _handle_update_playbook(
+    db: Any,
+    playbook_id: str,
+    name: str | None = None,
+    description: str | None = None,
+    steps: list | None = None,
+    tags: list | None = None,
+) -> dict:
+    from app.db.models import Playbook
+    from sqlalchemy import select
+    result = await db.execute(select(Playbook).where(Playbook.id == playbook_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        return {"error": f"Playbook '{playbook_id}' no encontrado"}
+    if name is not None:
+        p.name = name
+    if description is not None:
+        p.description = description
+    if steps is not None:
+        p.steps = steps
+    if tags is not None:
+        p.tags = tags
+    await db.commit()
+    return {"ok": True, "playbook_id": p.id, "name": p.name}
+
+
+async def _handle_delete_playbook(db: Any, playbook_id: str) -> dict:
+    from app.db.models import Playbook
+    from sqlalchemy import select, delete as sa_delete
+    result = await db.execute(select(Playbook).where(Playbook.id == playbook_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        return {"error": f"Playbook '{playbook_id}' no encontrado"}
+    await db.execute(sa_delete(Playbook).where(Playbook.id == playbook_id))
+    await db.commit()
+    return {"ok": True, "deleted": p.name}
+
+
+registry.register(LocalTool(
+    name="save_playbook",
+    description=(
+        "Guarda una secuencia de tools como playbook reutilizable. "
+        "Cada paso es {label, tool, params}. "
+        "Usalo cuando el usuario quiera guardar un flujo que acabas de ejecutar, "
+        "o cuando te pida crear una automatización personalizada. "
+        "Ejemplo de steps: [{\"label\": \"Leer inbox\", \"tool\": \"read_gmail_inbox\", \"params\": {\"max_results\": 10}}, ...]"
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "name":        {"type": "string", "description": "Nombre descriptivo del playbook."},
+            "description": {"type": "string", "description": "Qué hace este flujo y cuándo usarlo."},
+            "steps": {
+                "type": "array",
+                "description": "Lista de pasos en orden.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label":  {"type": "string", "description": "Nombre legible del paso."},
+                        "tool":   {"type": "string", "description": "Nombre exacto de la tool."},
+                        "params": {"type": "object", "description": "Parámetros para la tool."},
+                    },
+                    "required": ["label", "tool"],
+                },
+            },
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Etiquetas opcionales."},
+        },
+        "required": ["name", "steps"],
+    },
+    handler=_handle_save_playbook,
+    requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="list_playbooks",
+    description="Lista todos los playbooks guardados con su metadata (nombre, pasos, última ejecución).",
+    input_schema={"type": "object", "properties": {}},
+    handler=_handle_list_playbooks,
+    requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="get_playbook",
+    description="Obtiene los detalles completos de un playbook, incluyendo todos sus pasos.",
+    input_schema={
+        "type": "object",
+        "properties": {"playbook_id": {"type": "string"}},
+        "required": ["playbook_id"],
+    },
+    handler=_handle_get_playbook,
+    requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="run_playbook",
+    description=(
+        "Ejecuta un playbook por su ID: carga los pasos y los devuelve como instrucciones "
+        "para que los ejecutes en orden usando tus tools. "
+        "Usá list_playbooks() primero si no sabés el ID."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {"playbook_id": {"type": "string"}},
+        "required": ["playbook_id"],
+    },
+    handler=_handle_run_playbook,
+    requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="update_playbook",
+    description="Actualiza un playbook existente (nombre, descripción, pasos o tags).",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "playbook_id": {"type": "string"},
+            "name":        {"type": "string"},
+            "description": {"type": "string"},
+            "steps":       {"type": "array", "items": {"type": "object"}},
+            "tags":        {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["playbook_id"],
+    },
+    handler=_handle_update_playbook,
+    requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="delete_playbook",
+    description="Elimina un playbook permanentemente.",
+    input_schema={
+        "type": "object",
+        "properties": {"playbook_id": {"type": "string"}},
+        "required": ["playbook_id"],
+    },
+    handler=_handle_delete_playbook,
+    requires_confirmation=True,
 ))
 
 

@@ -33,6 +33,7 @@ FASE 7: [x] Claude Code bridge
 FASE 7.5: [x] Voz — hotkey Mac + audio Telegram
 FASE 8: [x] Agente Chrome
 FASE 9: [x] Tareas programadas + Gmail/Calendar activos + memoria de sesión
+FASE 10: [x] Playbooks + sub_webdev + live console streaming
 ```
 
 ---
@@ -332,9 +333,11 @@ Estado actual del código — diferencias vs spec original y detalles de impleme
 ### Router: categorías disponibles
 
 ```
-consulta_simple | notion_tasks | coding | admin_email | admin_calendar |
+consulta_simple | notion_tasks | coding | web_dev | admin_email | admin_calendar |
 analisis | arquitectura | tareas_programadas | navegacion_chrome
 ```
+
+`web_dev`: landing pages, sitios Next.js/React, frontend, animaciones → routea con tools para sub_webdev
 
 ### Tools disponibles en el registry
 
@@ -360,6 +363,9 @@ schedule_task, list_scheduled_tasks, delete_scheduled_task, toggle_scheduled_tas
 
 # Chrome agent
 chrome_navigate, chrome_screenshot
+
+# Playbooks (Fase 10)
+save_playbook, list_playbooks, get_playbook, run_playbook, update_playbook, delete_playbook
 ```
 
 ### Categorías de memoria
@@ -387,7 +393,26 @@ Orquestador → create_subagent tool (requires_confirmation=False)
 **Sub-agentes disponibles:**
 
 ```python
+"sub_webdev": {
+    # Senior Frontend Engineer + Motion Designer
+    # Especialidad: Next.js 15 + Tailwind CSS + TypeScript + animaciones Apple-style
+    # scroll-driven video, landing pages cinematográficas, GSAP + ScrollTrigger
+    # Trabaja directamente sobre repos Git: inspecciona, crea rama, implementa, valida build, abre PR
+    model: "claude-sonnet-4-6",
+    allowed_tools: [
+        "run_claude_code", "get_workers_status", "cancel_worker",
+        "get_memoria", "update_memoria", "search_memoria",
+    ],
+    forbidden_tools: ["create_subagent"],
+    max_workers: 5,
+    max_duration_minutes: 240,   # 4 horas — tareas de web dev son largas
+    approval_policy: "confirm_writes",
+    # Al crear: siempre incluir en el objective el repo path + estética/referencia + feature a implementar
+    # Guarda progreso en memoria con key webdev_progreso_[nombre_proyecto]
+}
+
 "sub_dev": {
+    # Dev senior backend/fullstack general
     model: "claude-sonnet-4-6",
     allowed_tools: [
         "run_claude_code", "get_workers_status", "cancel_worker",
@@ -467,7 +492,7 @@ RUN npm install -g @anthropic-ai/claude-code
 
 ```
 sessions, messages, memory, pending_approvals, tool_traces, security_events,
-workers, watcher_state, scheduled_tasks
+workers, watcher_state, scheduled_tasks, playbooks
 ```
 
 ### Web UI: componentes principales
@@ -477,10 +502,12 @@ components/chat/ChatWindow.tsx      — chat + SSE streaming
 components/chat/MessageBubble.tsx   — render mensajes + footer costo
 components/chat/InputBar.tsx        — input con botón de voz (Web Speech API)
 components/layout/Sidebar.tsx       — sesiones con título auto + botón eliminar
-components/layout/RightPanel.tsx    — tabs: Memoria | Seguridad | Equipo | Schedule
+components/layout/RightPanel.tsx    — tabs: Agentes | Memoria | Flujos | Workers | Seg.
 components/panels/MemoryPanel.tsx
 components/panels/SecurityPanel.tsx
 components/panels/AgentsPanel.tsx
+components/panels/PlaybooksPanel.tsx  — tab "Flujos": lista, run, delete playbooks
+components/panels/ConsolasPanel.tsx   — panel inferior colapsable: live output de workers
 ```
 
 ### API endpoints (todos prefijados con /api)
@@ -508,6 +535,12 @@ PATCH  /api/scheduled-tasks/{id}/toggle
 GET    /api/agents
 POST   /api/transcribe
 POST   /api/tts/synthesize
+GET    /api/playbooks
+POST   /api/playbooks
+GET    /api/playbooks/{id}
+PATCH  /api/playbooks/{id}
+DELETE /api/playbooks/{id}
+POST   /api/playbooks/{id}/run
 GET    /health
 ```
 
@@ -636,7 +669,7 @@ Al retomar, leer PROGRESS.md antes que nada.
 
 ## Historial de implementación (referencia)
 
-Las fases 0-9 están completas. Ver commits del repo para el detalle de cada implementación.
+Las fases 0-10 están completas. Ver commits del repo para el detalle de cada implementación.
 El código real en `backend/app/` es la fuente de verdad — este archivo documenta el estado actual,
 no la spec original (que puede diferir en detalles de implementación).
 
@@ -649,3 +682,7 @@ no la spec original (que puede diferir en detalles de implementación).
 | Piper TTS API | `synthesize(text, wave_file)` | `synthesize(text)` → `Iterable[AudioChunk]` |
 | Google OAuth | access token legacy | refresh token (no vence) |
 | Haiku model ID | `claude-haiku-4-5` | `claude-haiku-4-5-20251001` |
+| Router `opus` | sugería opus cuando aplica | bloqueado — nunca se usa sin auth explícita del usuario |
+| `run_claude_code` worker | subprocess síncrono | asyncio subprocess con streaming live a DB (15 líneas/flush) |
+| system prompt cache | bloque único con memoria | sistema separado: bloque estático cacheado + memoria dinámica sin cache |
+| ConsolasPanel | tab en RightPanel | panel colapsable en bottom de la pantalla, auto-abre al lanzar worker |

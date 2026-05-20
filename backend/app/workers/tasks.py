@@ -87,7 +87,6 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
     from app.db.session import CelerySessionLocal as AsyncSessionLocal
     from app.workers.manager import WorkerManager
 
-    # Recuperar datos del worker
     async with AsyncSessionLocal() as db:
         mgr = WorkerManager(db)
         worker = await mgr.get_by_id(worker_id)
@@ -101,19 +100,36 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
     try:
         import os
         env = os.environ.copy()
-        # Claude Code usa ANTHROPIC_API_KEY del entorno
-        proc = subprocess.run(
-            ["claude", "--print", prompt],
+
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "--print", prompt,
             cwd=working_dir,
-            capture_output=True,
-            text=True,
-            timeout=1800,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        output = proc.stdout or ""
-        stderr = proc.stderr or ""
-        if stderr:
-            output += f"\n\n[stderr]\n{stderr}"
+
+        output_chunks: list[str] = []
+        pending: list[str] = []
+
+        # Leer stdout línea a línea y hacer flush a DB cada 15 líneas (live view)
+        async for line_bytes in proc.stdout:
+            line = line_bytes.decode("utf-8", errors="replace")
+            output_chunks.append(line)
+            pending.append(line)
+            if len(pending) >= 15:
+                await _append_output(worker_id, "".join(pending))
+                pending = []
+
+        if pending:
+            await _append_output(worker_id, "".join(pending))
+
+        await asyncio.wait_for(proc.wait(), timeout=1800)
+        stderr_data = (await proc.stderr.read()).decode("utf-8", errors="replace")
+
+        output = "".join(output_chunks)
+        if stderr_data:
+            output += f"\n\n[stderr]\n{stderr_data}"
 
         success = proc.returncode == 0
         result_summary = output[:500] if output else "(sin output)"
@@ -126,20 +142,19 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
             error=None if success else f"returncode={proc.returncode}",
         )
 
-        # Actualizar Notion si aplica
         if notion_task_id:
             await _sync_notion_complete(notion_task_id, result_summary, cost_usd=0.0)
 
-        # Notificar al usuario
         icon = "✅" if success else "❌"
         msg = f"{icon} Worker terminó\n\n<b>Prompt:</b> {prompt[:100]}…\n\n<b>Resultado:</b> {result_summary[:300]}"
         await _notify_telegram(session_id, msg)
 
-    except subprocess.TimeoutExpired:
+    except asyncio.TimeoutError:
+        if proc.returncode is None:
+            proc.kill()
         await _update_worker(worker_id, status="failed", error="Timeout (30 min)")
         await _notify_telegram(session_id, f"⏱ Worker {worker_id[:8]} cancelado por timeout.")
     except FileNotFoundError:
-        # claude CLI no instalado — marcar failed con mensaje claro
         await _update_worker(
             worker_id,
             status="failed",

@@ -42,9 +42,11 @@ interface ChatWindowProps {
   onSessionId: (id: string) => void;
   onMemoryUpdate: () => void;
   onAgentsUpdate: () => void;
+  externalPrompt?: string | null;
+  onExternalPromptConsumed?: () => void;
 }
 
-export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate, onAgentsUpdate }: ChatWindowProps) {
+export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate, onAgentsUpdate, externalPrompt, onExternalPromptConsumed }: ChatWindowProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -197,29 +199,36 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate, onAgentsUpd
       if (memoryDirty) onMemoryUpdate();
       if (agentsDirty) {
         onAgentsUpdate();
-        // Polling: esperar el resultado del sub-agente y mostrarlo en el chat
+        // Polling: esperar el resultado del sub-agente y mostrarlo en el chat.
+        // Tomamos un snapshot de DB *ahora* para usar sus UUIDs reales como baseline,
+        // evitando que el poll agregue duplicados del turno actual (que en cliente
+        // tiene IDs aleatorios pero en DB tiene UUIDs distintos).
         const currentSessionId = loadedSessionRef.current;
         if (currentSessionId) {
-          const knownIds = new Set(messages.map((m) => m.id));
-          // agregar los mensajes actuales (incluyendo el recién cerrado)
-          knownIds.add(assistantId);
           let attempts = 0;
-          const poll = setInterval(async () => {
-            attempts++;
-            if (attempts > 60) { clearInterval(poll); return; } // máx 3 min
-            try {
-              const fresh = await getMessages(currentSessionId);
-              const newMsgs = fresh.filter((m) => !knownIds.has(m.id) && m.role === "assistant");
-              if (newMsgs.length > 0) {
-                clearInterval(poll);
-                onAgentsUpdate();
-                setMessages((prev) => [
-                  ...prev,
-                  ...newMsgs.map((m) => entryToMessage(m)),
-                ]);
-              }
-            } catch { /* silencioso */ }
-          }, 3_000);
+          getMessages(currentSessionId).then((baseline) => {
+            const baselineIds = new Set(baseline.map((m) => m.id));
+            const poll = setInterval(async () => {
+              attempts++;
+              if (attempts > 60) { clearInterval(poll); return; }
+              try {
+                const fresh = await getMessages(currentSessionId);
+                const newMsgs = fresh.filter(
+                  (m) => !baselineIds.has(m.id) && m.role === "assistant"
+                );
+                if (newMsgs.length > 0) {
+                  clearInterval(poll);
+                  onAgentsUpdate();
+                  // Deduplicar contra el estado actual (por si hubo race condition)
+                  setMessages((prev) => {
+                    const prevIds = new Set(prev.map((m) => m.id));
+                    const toAdd = newMsgs.filter((m) => !prevIds.has(m.id));
+                    return toAdd.length > 0 ? [...prev, ...toAdd.map(entryToMessage)] : prev;
+                  });
+                }
+              } catch { /* silencioso */ }
+            }, 3_000);
+          });
         }
       }
 
@@ -245,6 +254,13 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate, onAgentsUpd
     },
     [sessionId, streaming, onSessionId, onMemoryUpdate, onAgentsUpdate, ttsEnabled]
   );
+
+  useEffect(() => {
+    if (externalPrompt) {
+      send(externalPrompt);
+      onExternalPromptConsumed?.();
+    }
+  }, [externalPrompt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex flex-col h-full min-h-0">

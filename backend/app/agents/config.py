@@ -61,23 +61,33 @@ CALENDAR VÍA MCP (disponible en contextos de calendar y tareas programadas):
 Tenés acceso a las herramientas nativas de Google Calendar a través del MCP de Google.
 Úsalas para leer, crear y modificar eventos cuando el usuario lo pida.
 """
-    from app.agents.subagent_registry import SUB_AGENTS
-    subagent_lines = []
-    for sub in SUB_AGENTS.values():
-        subagent_lines.append(
-            f"- {sub.id}: {sub.system_prompt.split('.')[0]}. "
-            f"Hasta {sub.max_workers} workers, duración máx {sub.max_duration_minutes} min, "
-            f"política '{sub.approval_policy}'. "
-            f"Tools: {', '.join(sub.allowed_tools)}."
-        )
-    system += "\nSUB-AGENTES DISPONIBLES (tool: create_subagent):\n"
-    system += "\n".join(subagent_lines)
     system += """
+SUB-AGENTES — usá create_subagent(type=..., name=..., objective=...) para instanciarlos.
+⚠️  PARÁMETROS VÁLIDOS: type, name, objective, working_dir, notion_task_id, notify_on_done.
+    NO uses max_workers, duration_minutes, policy, model — esos son internos, no parámetros del tool.
+
+  • type='sub_webdev' → Frontend Engineer Next.js+Tailwind+animaciones Apple-style.
+    Cuándo: el usuario pide páginas web, landing pages, scroll effects, animaciones, diseño frontend.
+    Ejemplo correcto:
+      create_subagent(type='sub_webdev', name='hero-portfolioNext',
+        objective='Implementá hero section con video scroll-driven en /workspace/portfolioNext. Estética Linear.',
+        working_dir='/workspace/portfolioNext')
+
+  • type='sub_dev' → Dev backend/fullstack. APIs, bases de datos, scripts, migraciones.
+    Ejemplo correcto:
+      create_subagent(type='sub_dev', name='api-auth',
+        objective='Implementá autenticación JWT en /workspace/mi-api.', working_dir='/workspace/mi-api')
+
+  • type='sub_analista' → Analista. Reportes, investigación, síntesis.
+    Ejemplo correcto:
+      create_subagent(type='sub_analista', name='reporte-inbox',
+        objective='Analizá el inbox de Gmail y generá reporte de los últimos 30 días.')
 
 Cuándo crear un sub-agente:
-- La tarea requiere múltiples sesiones de Claude Code coordinadas
-- El trabajo es demasiado largo para una sola sesión (>30 min estimado)
-- Querés delegar un objetivo completo y recibir el resultado al final
+- El trabajo requiere múltiples Claude Code sessions coordinadas
+- Objetivo demasiado largo para una sola sesión (>30 min estimado)
+- El usuario quiere delegar un feature completo y recibir el resultado al final
+Monitoreá progreso con get_workers_status y reportale actualizaciones al usuario.
 
 TAREAS PROGRAMADAS (tool: schedule_task):
 Podés crear tareas que se ejecutan automáticamente según un cron. Tipos:
@@ -93,6 +103,29 @@ programada lo requiera. Requieren GMAIL_OAUTH_TOKEN y CALENDAR_OAUTH_TOKEN en .e
 
 NOTION (tools: notion_create_task, notion_update_task, notion_search, notion_list_database, notion_get_page):
 Podés crear y actualizar tareas en tableros de Notion como resultado de acciones de Gmail/Calendar.
+
+PLAYBOOKS — FLUJOS REUTILIZABLES (Fase 10):
+Podés guardar secuencias de tools como playbooks para reutilizarlos sin regenerarlos.
+Tools: save_playbook, list_playbooks, get_playbook, run_playbook, update_playbook, delete_playbook.
+
+Cuándo guardar un playbook:
+- El usuario pidió "guardá este flujo" o "automatizá esto para la próxima vez"
+- Acabás de ejecutar una secuencia de 2+ tools que el usuario querrá repetir
+- El usuario dice "quiero que cuando pase X, hagas Y y Z"
+
+Formato de pasos: [{label, tool, params}] — en orden de ejecución.
+Ejemplo de flujo "inbox → notion":
+  save_playbook(
+    name="inbox → notion",
+    description="Lee mails nuevos y crea tareas en Notion",
+    steps=[
+      {"label": "Leer inbox", "tool": "read_gmail_inbox", "params": {"max_results": 10}},
+      {"label": "Crear tarea", "tool": "notion_create_task", "params": {"board": "Sprint Backend", "title": "Mail nuevo"}},
+    ]
+  )
+
+Para ejecutar: run_playbook(playbook_id) → devuelve instrucciones de los pasos → ejecutalos en orden.
+Para evolucionar: update_playbook(playbook_id, steps=[...]) con los pasos mejorados.
 
 MEMORIA DE SESIONES (tool: remember_session):
 Cuando el usuario pida "recordá esta sesión" o "guardá lo que hablamos", usá remember_session.

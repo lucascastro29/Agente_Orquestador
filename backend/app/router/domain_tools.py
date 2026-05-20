@@ -69,6 +69,14 @@ DOMAIN_CONTEXTS: dict[str, DomainContext] = {
         ],
         memory_categories=["proyecto", "objetivo_actual"],
     ),
+    "web_dev": DomainContext(
+        tools=[
+            "run_claude_code", *_AGENT_TOOLS,
+            "get_memoria", "update_memoria", "search_memoria",
+            "notion_search", "notion_get_page",
+        ],
+        memory_categories=["proyecto", "objetivo_actual", "nota_libre"],
+    ),
     "arquitectura": DomainContext(
         tools=None,
         memory_categories=None,

@@ -210,9 +210,11 @@ class AgentRunner:
             limit=10, categories=ctx.memory_categories
         )
         memory_text = self.memory_svc.format_for_prompt(memory_entries)
-        system_text = ORCHESTRATOR_SYSTEM
+        direct_system: list[dict] = [
+            {"type": "text", "text": ORCHESTRATOR_SYSTEM, "cache_control": {"type": "ephemeral"}}
+        ]
         if memory_text:
-            system_text += f"\n\n{memory_text}"
+            direct_system.append({"type": "text", "text": memory_text})
 
         messages = list(prior_messages)
         messages.append({"role": "user", "content": message})
@@ -223,7 +225,7 @@ class AgentRunner:
         create_kwargs: dict[str, Any] = dict(
             model=model,
             max_tokens=1024,
-            system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+            system=direct_system,
             messages=messages,
         )
         if tools:
@@ -274,7 +276,8 @@ class AgentRunner:
         model_map = {
             "haiku": "claude-haiku-4-5-20251001",
             "sonnet": "claude-sonnet-4-6",
-            "opus": "claude-opus-4-7",
+            # "opus" intencionalmente ausente: nunca se usa sin autorización explícita del usuario.
+            # Si el router sugiere opus, cae al default (sonnet).
         }
         model = ctx.model_override or model_map.get(route.suggested_model, "claude-sonnet-4-6")
 
@@ -337,8 +340,11 @@ class AgentRunner:
             categories=ctx.memory_categories,
         )
         memory_text = self.memory_svc.format_for_prompt(memory_entries)
-        system_text = ORCHESTRATOR_SYSTEM + (f"\n\n{memory_text}" if memory_text else "")
-        system_param = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}]
+        system_param: list[dict] = [
+            {"type": "text", "text": ORCHESTRATOR_SYSTEM, "cache_control": {"type": "ephemeral"}}
+        ]
+        if memory_text:
+            system_param.append({"type": "text", "text": memory_text})
 
         tools = registry.to_anthropic_tools(agent.allowed_tools if agent else [])
         messages = list(prior_messages)
@@ -603,17 +609,14 @@ class AgentRunner:
         memory_entries = await self.memory_svc.get_relevant(limit=20)
         memory_text = self.memory_svc.format_for_prompt(memory_entries)
 
-        system_text = agent.system_prompt
-        if memory_text:
-            system_text += f"\n\n{memory_text}"
-
-        return [
-            {
-                "type": "text",
-                "text": system_text,
-                "cache_control": {"type": "ephemeral"},
-            }
+        # Bloque estático cacheado — invalida solo cuando cambia el system prompt
+        blocks: list[dict] = [
+            {"type": "text", "text": agent.system_prompt, "cache_control": {"type": "ephemeral"}}
         ]
+        # Memoria dinámica separada — no se cachea para no invalidar el bloque anterior
+        if memory_text:
+            blocks.append({"type": "text", "text": memory_text})
+        return blocks
 
     async def _execute_local_tool(
         self, block: Any, agent: AgentConfig, session_id: str
@@ -659,6 +662,8 @@ class AgentRunner:
                     kwargs["session_id"] = session_id
                 output = await tool.handler(self.worker_mgr, **kwargs)
             elif block.name in ("schedule_task", "list_scheduled_tasks", "delete_scheduled_task", "toggle_scheduled_task"):
+                output = await tool.handler(self.db, **block.input)
+            elif block.name in ("save_playbook", "list_playbooks", "get_playbook", "run_playbook", "update_playbook", "delete_playbook"):
                 output = await tool.handler(self.db, **block.input)
             elif block.name == "remember_session":
                 output = await tool.handler(self.db, session_id, **block.input)

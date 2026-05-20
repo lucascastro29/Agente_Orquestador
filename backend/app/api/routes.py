@@ -12,12 +12,13 @@ from fastapi import File, UploadFile
 
 from app.api.schemas import (
     AgentOut, ApprovalAction, ApprovalOut, ChatRequest, ChatResponse,
-    MemoryIn, MemoryOut, MessageOut, ScheduleTaskOut, ScheduledTaskOut, SecurityEventOut,
+    MemoryIn, MemoryOut, MessageOut, PlaybookIn, PlaybookOut, PlaybookPatch,
+    ScheduleTaskOut, ScheduledTaskOut, SecurityEventOut,
     SessionOut, TranscribeResponse, TTSSynthesizeRequest, WorkerOut,
 )
 from app.db.models import (
-    Message, Memory, PendingApproval, ScheduledTask, SecurityEvent, Session as DBSession,
-    ToolTrace, Worker,
+    Message, Memory, PendingApproval, Playbook, ScheduledTask, SecurityEvent,
+    Session as DBSession, ToolTrace, Worker,
 )
 from app.db.session import AsyncSessionLocal
 from app.memory.service import MemoryService
@@ -668,6 +669,128 @@ def _worker_out(w: Worker) -> WorkerOut:
         notion_task_id=w.notion_task_id, error=w.error, notified=w.notified,
         created_at=w.created_at, started_at=w.started_at, finished_at=w.finished_at,
     )
+
+
+# --- Playbooks (Fase 10) ---
+
+def _playbook_out(p: Playbook) -> PlaybookOut:
+    return PlaybookOut(
+        id=p.id, name=p.name, description=p.description,
+        steps=p.steps or [], tags=p.tags or [],
+        run_count=p.run_count, last_run_at=p.last_run_at,
+        created_at=p.created_at, updated_at=p.updated_at,
+    )
+
+
+@router.get("/playbooks", response_model=list[PlaybookOut])
+async def list_playbooks(
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> list[PlaybookOut]:
+    result = await db.execute(select(Playbook).order_by(Playbook.created_at.desc()))
+    return [_playbook_out(p) for p in result.scalars().all()]
+
+
+@router.post("/playbooks", response_model=PlaybookOut)
+async def create_playbook(
+    body: PlaybookIn,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> PlaybookOut:
+    p = Playbook(
+        name=body.name,
+        description=body.description,
+        steps=[s.model_dump() for s in body.steps],
+        tags=body.tags,
+    )
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+    return _playbook_out(p)
+
+
+@router.get("/playbooks/{playbook_id}", response_model=PlaybookOut)
+async def get_playbook(
+    playbook_id: str,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> PlaybookOut:
+    result = await db.execute(select(Playbook).where(Playbook.id == playbook_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Playbook no encontrado")
+    return _playbook_out(p)
+
+
+@router.patch("/playbooks/{playbook_id}", response_model=PlaybookOut)
+async def update_playbook(
+    playbook_id: str,
+    body: PlaybookPatch,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> PlaybookOut:
+    result = await db.execute(select(Playbook).where(Playbook.id == playbook_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Playbook no encontrado")
+    if body.name is not None:
+        p.name = body.name
+    if body.description is not None:
+        p.description = body.description
+    if body.steps is not None:
+        p.steps = [s.model_dump() for s in body.steps]
+    if body.tags is not None:
+        p.tags = body.tags
+    await db.commit()
+    await db.refresh(p)
+    return _playbook_out(p)
+
+
+@router.delete("/playbooks/{playbook_id}")
+async def delete_playbook(
+    playbook_id: str,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    result = await db.execute(select(Playbook).where(Playbook.id == playbook_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Playbook no encontrado")
+    await db.execute(delete(Playbook).where(Playbook.id == playbook_id))
+    await db.commit()
+    return {"ok": True}
+
+
+@router.post("/playbooks/{playbook_id}/run")
+async def run_playbook_endpoint(
+    playbook_id: str,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Incrementa run_count y devuelve el playbook para que el frontend lo envíe al chat."""
+    result = await db.execute(select(Playbook).where(Playbook.id == playbook_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Playbook no encontrado")
+    from datetime import datetime, timezone
+    p.run_count = (p.run_count or 0) + 1
+    p.last_run_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {
+        "playbook_id": p.id,
+        "name": p.name,
+        "steps": p.steps,
+        "prompt": (
+            f"Ejecutá el playbook '{p.name}' paso a paso.\n\n"
+            f"Descripción: {p.description or 'sin descripción'}\n\n"
+            f"Pasos:\n" +
+            "\n".join(
+                f"{i+1}. [{s.get('label', s.get('tool', ''))}] "
+                f"tool={s['tool']} params={s.get('params', {})}"
+                for i, s in enumerate(p.steps)
+            )
+        ),
+    }
 
 
 # --- TTS ---

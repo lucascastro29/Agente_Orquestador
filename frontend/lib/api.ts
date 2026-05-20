@@ -209,6 +209,37 @@ export async function deleteScheduledTask(id: string): Promise<void> {
   });
 }
 
+export interface PlaybookEntry {
+  id: string;
+  name: string;
+  description: string | null;
+  steps: Array<{ label: string; tool: string; params?: Record<string, unknown> }>;
+  tags: string[];
+  run_count: number;
+  last_run_at: string | null;
+  created_at: string;
+}
+
+export async function getPlaybooks(): Promise<PlaybookEntry[]> {
+  const res = await fetch(`${BASE}/api/playbooks`, { headers: headers() });
+  return res.json();
+}
+
+export async function deletePlaybook(id: string): Promise<void> {
+  await fetch(`${BASE}/api/playbooks/${id}`, {
+    method: "DELETE",
+    headers: headers(),
+  });
+}
+
+export async function runPlaybook(id: string): Promise<{ prompt: string }> {
+  const res = await fetch(`${BASE}/api/playbooks/${id}/run`, {
+    method: "POST",
+    headers: headers(),
+  });
+  return res.json();
+}
+
 export async function synthesizeTTS(text: string): Promise<string | null> {
   try {
     const res = await fetch(`${BASE}/api/tts/synthesize`, {

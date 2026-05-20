@@ -143,3 +143,35 @@ class ScheduledTaskOut(BaseModel):
     run_count: int
     last_error: str | None
     created_at: datetime
+
+
+class PlaybookStepIn(BaseModel):
+    label: str
+    tool: str
+    params: dict = {}
+
+
+class PlaybookIn(BaseModel):
+    name: str
+    description: str | None = None
+    steps: list[PlaybookStepIn] = []
+    tags: list[str] = []
+
+
+class PlaybookPatch(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    steps: list[PlaybookStepIn] | None = None
+    tags: list[str] | None = None
+
+
+class PlaybookOut(BaseModel):
+    id: str
+    name: str
+    description: str | None
+    steps: list[dict]
+    tags: list[str]
+    run_count: int
+    last_run_at: datetime | None
+    created_at: datetime
+    updated_at: datetime

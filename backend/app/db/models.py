@@ -141,6 +141,22 @@ class WatcherState(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
+class Playbook(Base):
+    """Flujo de automatización guardado — secuencia de tool calls reutilizable."""
+    __tablename__ = "playbooks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Lista de {label, tool, params} — orden de ejecución
+    steps: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    run_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class Worker(Base):
     __tablename__ = "workers"
 
