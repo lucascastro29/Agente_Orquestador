@@ -2,7 +2,24 @@
 
 > Este archivo es para Claude Code, no para lectura humana.
 > Referencia completa del proyecto: PROJECT.md y SECURITY.md en esta misma carpeta.
-> Antes de escribir cualquier línea de código, leé PROJECT.md completo.
+> **IMPORTANTE**: Leé este archivo COMPLETO antes de escribir cualquier línea de código.
+
+---
+
+## REGLA DE ORO SOBRE ESTE ARCHIVO
+
+**Todo cambio de infraestructura, nueva feature, nuevo endpoint, nuevo tool, nuevo modelo de DB o cambio
+arquitectónico DEBE quedar reflejado en este archivo en la misma sesión en que se implementa.**
+
+Al iniciar una sesión de Claude Code sobre este repo:
+1. Leer CLAUDE.md completo — es la fuente de verdad del estado actual
+2. Verificar qué fases tienen `[x]`
+3. Leer PROGRESS.md si existe (estado de trabajo en curso)
+4. NO reescribir lo que ya funciona
+
+Cuando se cierra una sesión con cambios implementados:
+1. Actualizar las secciones relevantes de este archivo
+2. Hacer commit incluyendo el CLAUDE.md actualizado
 
 ---
 
@@ -19,10 +36,125 @@ FASE 6: [x] Gmail + Calendar + Watchers
 FASE 7: [x] Claude Code bridge
 FASE 7.5: [x] Voz — hotkey Mac + audio Telegram
 FASE 8: [ ] Agente Chrome
-
+FASE 9: [x] Tareas programadas + Gmail/Calendar activos + memoria de sesión
 ```
 
 **Instrucción de retoma**: si el contexto se cortó, leé este archivo, chequeá qué fases tienen `[x]`, leé el PROGRESS.md si existe, y continuá desde donde quedó. No reescribas lo que ya funciona.
+
+---
+
+## ESTADO REAL DEL CÓDIGO (diferencias vs spec original)
+
+Estas son implementaciones que difieren de la spec original documentada abajo. El código real es lo que vale.
+
+### Telegram: usa POLLING, no webhook
+- `app/telegram/polling.py` — loop de polling en background (no requiere ngrok ni servidor público)
+- Se inicia en `main.py` como `asyncio.create_task(run_polling())`
+- El webhook sigue existiendo en `app/telegram/webhook.py` pero no se usa actualmente
+
+### Tools disponibles en el registry (Fase 1-9)
+```python
+# Memoria
+get_memoria, update_memoria, delete_memoria, search_memoria, remember_session
+
+# Workers y Claude Code
+run_claude_code, get_workers_status, cancel_worker
+
+# Sub-agentes
+create_subagent
+
+# Notion
+notion_get_tasks, notion_search, notion_list_database, notion_get_page,
+notion_create_task, notion_update_task
+
+# Gmail + Calendar (activos, no solo watchers)
+read_gmail_inbox, read_calendar_events
+
+# Tareas programadas
+schedule_task, list_scheduled_tasks, delete_scheduled_task, toggle_scheduled_task
+```
+
+### Categorías de memoria disponibles
+```
+objetivo_actual | proyecto | preferencia | persona | recordatorio | nota_libre | sesion_pasada
+```
+`sesion_pasada` es nueva — se usa con `remember_session` para guardar resúmenes cross-sesión.
+
+### Router: categorías disponibles
+```
+consulta_simple | notion_tasks | coding | admin_email | admin_calendar |
+analisis | arquitectura | tareas_programadas
+```
+
+### DB: tablas existentes
+```
+sessions, messages, memory, pending_approvals, tool_traces, security_events,
+workers, watcher_state, scheduled_tasks
+```
+
+### Web UI: panels disponibles
+```
+components/chat/ChatWindow.tsx      — chat + SSE streaming
+components/chat/MessageBubble.tsx   — render mensajes + footer costo
+components/chat/InputBar.tsx        — input con botón de voz (Web Speech API)
+components/layout/Sidebar.tsx       — sesiones con título auto + botón eliminar
+components/layout/RightPanel.tsx    — tabs: Memoria | Seguridad | Equipo | Schedule
+components/panels/MemoryPanel.tsx
+components/panels/SecurityPanel.tsx
+components/panels/AgentsPanel.tsx
+```
+
+### Voz (Fase 7.5)
+- Web: micrófono nativo via Web Speech API en `InputBar.tsx`
+- Telegram: audio enviado → Whisper local (faster-whisper) transcribe → texto al agente
+- Hotkey global: `scripts/hotkey_voice.py` — Cmd+< (Mac) / Ctrl+< (Windows)
+- Transcripción local: `app/transcription/whisper.py`
+
+### TTS — Text-to-Speech (narración de respuestas)
+- Motor: **Piper TTS** (`piper-tts` PyPI) — voz `es_ES-davefx-medium`
+- Modelo descargado en `/app/piper_voices/` (persiste via volumen Docker)
+- Pre-carga al iniciar en `main.py` via `asyncio.create_task(_preload_tts())`
+- `app/tts/service.py` — `TTSService`: `synthesize_wav()` → WAV, `synthesize_ogg()` → OGG Opus
+- Limpia markdown + footer de costo antes de sintetizar
+- **Web UI**: toggle ON/OFF en barra superior del chat (localStorage `tts_enabled`); autoplay tras respuesta
+- **Telegram**: envía audio OGG Opus via `sendVoice` después de cada respuesta de texto
+- Dependencias del sistema: `ffmpeg` (conversión WAV→OGG), `espeak-ng` (fonemización)
+- Endpoint: `POST /api/tts/synthesize` → devuelve `audio/wav`
+
+### Celery beat schedule actual
+```python
+check-mail-every-15min          → watchers.check_mail (crontab */15min)
+check-calendar-every-30min      → watchers.check_calendar (crontab */30min)
+run-scheduled-tasks-every-min   → workers.run_due_scheduled_tasks (crontab */1min)
+```
+
+### API endpoints (todos prefijados con /api)
+```
+POST   /api/chat
+POST   /api/chat/stream          (SSE)
+GET    /api/sessions
+DELETE /api/sessions/{id}
+GET    /api/sessions/{id}/messages
+GET    /api/memory
+POST   /api/memory
+DELETE /api/memory/{id}
+GET    /api/approvals
+POST   /api/approvals/{id}
+GET    /api/security/events
+POST   /api/security/events/{id}/resolve
+POST   /api/security/events/{id}/retry
+GET    /api/workers
+POST   /api/workers/hook
+GET    /api/schedule              (watchers beat schedule)
+GET    /api/scheduled-tasks       (tareas programadas creadas por el agente)
+DELETE /api/scheduled-tasks/{id}
+PATCH  /api/scheduled-tasks/{id}/toggle
+GET    /api/agents
+POST   /api/transcribe
+GET    /health
+```
+
+---
 
 ---
 
@@ -1121,6 +1253,84 @@ httpx.post(
 ### Al terminar esta fase
 
 Marcá `FASE 7: [x]`. Commit: `feat: fase-7 completa — claude code bridge`
+
+---
+
+## FASE 9 — Tareas programadas + Gmail/Calendar activos + memoria de sesión
+
+**Estado: [x] COMPLETA**
+
+### Qué se implementó
+
+#### 1. Tareas programadas (`scheduled_tasks` table)
+- Modelo `ScheduledTask` en `app/db/models.py`
+- Expresión cron estándar (5 campos). Librería: `croniter`
+- `action_type`: `"message"` | `"run_claude_code"` | `"create_subagent"`
+- Celery task `workers.run_due_scheduled_tasks` — corre cada minuto, ejecuta tareas vencidas
+- Actualiza `last_run_at`, `next_run_at`, `run_count`, `last_error` tras cada ejecución
+- Beat schedule: `run-scheduled-tasks-every-min` en `app/worker.py`
+
+**Tools nuevas:**
+```python
+schedule_task       # crea tarea programada (requires_confirmation=True)
+list_scheduled_tasks  # lista todas
+toggle_scheduled_task # activa/desactiva
+delete_scheduled_task # elimina (requires_confirmation=True)
+```
+
+**API endpoints:**
+```
+GET    /api/scheduled-tasks
+DELETE /api/scheduled-tasks/{id}
+PATCH  /api/scheduled-tasks/{id}/toggle  body: {"enabled": bool}
+```
+
+#### 2. Gmail y Calendar como tools activas
+Las tools `read_gmail_inbox` y `read_calendar_events` usan directamente los tokens OAuth:
+- Requieren `GMAIL_OAUTH_TOKEN` y `CALENDAR_OAUTH_TOKEN` en `.env`
+- Complementan los watchers pasivos (Fase 6) con acceso on-demand
+- Disponibles en dominios `admin_email`, `admin_calendar`, `tareas_programadas`
+
+#### 3. Notion update
+- Nueva tool `notion_update_task` — actualiza status y/o descripción de tarea existente
+- Llama a `NotionTaskSync.update_task()` en `app/notion/task_sync.py`
+
+#### 4. Memoria de sesiones (cross-sesión)
+- Nueva categoría de memoria: `sesion_pasada`
+- Tool `remember_session`: resume la sesión actual con Haiku y guarda en memoria
+- Para recordar: `update_memoria` con `category="sesion_pasada"`
+- Para buscar: `get_memoria` con `categories=["sesion_pasada"]`
+- La memoria DENTRO de una sesión ya funciona vía historial de mensajes (`prior_messages`)
+
+#### 5. Fix: create_subagent ahora recibe session_id
+- `_execute_local_tool` en `runner.py` faltaba inyectar `worker_mgr` y `session_id` para `create_subagent`
+- Corregido: ahora trata `create_subagent` igual que `run_claude_code`
+
+#### 6. Fix: sesiones se nombran con primer mensaje
+- `_get_or_create_session` acepta `first_message` y lo usa como título (60 chars)
+- Endpoints `/chat` y `/chat/stream` pasan el mensaje al crear sesión
+
+#### 7. Fix: sessions streaming bug
+- Al recibir evento `session_id` durante streaming, se pre-popula `loadedSessionRef`
+- Evita que el useEffect borre los mensajes en curso al cambiar `sessionId`
+
+#### 8. UI: eliminar sesiones
+- `DELETE /api/sessions/{id}` borra la sesión + mensajes + workers + approvals + traces
+- Botón ×(trash) en sidebar, visible al hover
+
+### Diagrama de una tarea programada con message
+
+```
+Celery Beat cada 1min
+  → run_due_scheduled_tasks
+    → query scheduled_tasks WHERE next_run_at <= now AND enabled=True
+    → para action_type="message":
+        crea DBSession(channel="scheduled")
+        AgentRunner.run_routed(message, session_id)
+        → router clasifica → herramientas disponibles (Gmail, Calendar, Notion, etc.)
+        → resultado se envía a Telegram si hay chat_id
+    → actualiza last_run_at, computa next_run_at con croniter
+```
 
 ---
 
