@@ -14,3 +14,5 @@ python-multipart==0.0.12
 python-telegram-bot==21.6
 faster-whisper==1.1.1
 requests>=2.31.0
+croniter>=2.0.0
+piper-tts>=1.2.0

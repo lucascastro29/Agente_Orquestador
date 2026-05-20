@@ -15,6 +15,16 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # Pre-cargar modelo TTS en background (primer síntesis es lenta por la descarga)
+    async def _preload_tts() -> None:
+        try:
+            from app.tts.service import tts_service
+            await tts_service._ensure_model()
+        except Exception:
+            pass  # TTS es opcional — no bloquear el arranque
+
+    asyncio.create_task(_preload_tts())
+
     # Iniciar polling de Telegram en background (no requiere webhook ni ngrok)
     from app.telegram.polling import run_polling
     polling_task = asyncio.create_task(run_polling())
