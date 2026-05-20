@@ -141,6 +141,7 @@ export interface AgentEntry {
   approval_policy: string;
   active_workers: number;
   total_sessions: number;
+  total_runs: number;
 }
 
 export interface ScheduleTaskEntry {
@@ -172,6 +173,40 @@ export async function getAgents(): Promise<AgentEntry[]> {
 export async function getSchedule(): Promise<ScheduleTaskEntry[]> {
   const res = await fetch(`${BASE}/api/schedule`, { headers: headers() });
   return res.json();
+}
+
+export interface UserScheduledTask {
+  id: string;
+  name: string;
+  description: string | null;
+  cron_expr: string;
+  enabled: boolean;
+  action_type: string;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  run_count: number;
+  last_error: string | null;
+  created_at: string;
+}
+
+export async function getScheduledTasks(): Promise<UserScheduledTask[]> {
+  const res = await fetch(`${BASE}/api/scheduled-tasks`, { headers: headers() });
+  return res.json();
+}
+
+export async function toggleScheduledTask(id: string, enabled: boolean): Promise<void> {
+  await fetch(`${BASE}/api/scheduled-tasks/${id}/toggle`, {
+    method: "PATCH",
+    headers: headers(),
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export async function deleteScheduledTask(id: string): Promise<void> {
+  await fetch(`${BASE}/api/scheduled-tasks/${id}`, {
+    method: "DELETE",
+    headers: headers(),
+  });
 }
 
 export async function synthesizeTTS(text: string): Promise<string | null> {

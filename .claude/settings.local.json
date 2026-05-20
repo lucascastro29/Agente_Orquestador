@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/lucascastro/.docker/run/**)",
+      "Read(//var/run/**)",
+      "Bash(DOCKER_HOST=unix:///var/run/docker.sock docker info)",
+      "Bash(docker compose *)",
+      "Bash(docker context *)",
+      "Bash(open -a \"Docker Desktop\")",
+      "Bash(docker info *)",
+      "Bash(npm run *)",
+      "Bash(echo \"PID=$!\")",
+      "Bash(curl -s http://localhost:3000)",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(pkill -f \"docker compose up\")",
+      "Bash(pkill -f \"docker-compose up\")",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash([ -s \"$f\" ])",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}

@@ -7,6 +7,9 @@ sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
 alembic==1.13.3
 celery[redis]==5.4.0
+vine==5.1.0
+amqp==5.3.1
+kombu==5.3.7
 redis==5.2.0
 httpx==0.27.2
 sse-starlette==2.1.3

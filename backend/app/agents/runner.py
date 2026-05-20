@@ -371,6 +371,14 @@ class AgentRunner:
 
         # Costo y persistencia
         turn_cost = self.cost_tracker.calculate(final_model, final_usage) if final_usage else 0.0
+        await self._persist_turn_streaming(
+            session_id=session_id,
+            user_message=message,
+            assistant_text=accumulated_text,
+            model=final_model,
+            usage=final_usage,
+            cost_usd=turn_cost,
+        )
         session_cost = await self._update_session_cost(session_id, turn_cost)
 
         if final_usage:
@@ -703,6 +711,41 @@ class AgentRunner:
         await self.db.commit()
         await self.db.refresh(approval)
         return approval.id
+
+    async def _persist_turn_streaming(
+        self,
+        session_id: str,
+        user_message: str,
+        assistant_text: str,
+        model: str,
+        usage: Any,
+        cost_usd: float,
+    ) -> None:
+        result = await self.db.execute(
+            select(func.count(Message.id)).where(Message.session_id == session_id)
+        )
+        base_pos = result.scalar_one() or 0
+
+        self.db.add(Message(
+            session_id=session_id,
+            position=base_pos,
+            role="user",
+            content=[{"type": "text", "text": user_message}],
+        ))
+        self.db.add(Message(
+            session_id=session_id,
+            position=base_pos + 1,
+            role="assistant",
+            content=[{"type": "text", "text": assistant_text}],
+            model=model,
+            stop_reason="end_turn",
+            input_tokens=getattr(usage, "input_tokens", None) if usage else None,
+            output_tokens=getattr(usage, "output_tokens", None) if usage else None,
+            cache_read_tokens=getattr(usage, "cache_read_input_tokens", None) if usage else None,
+            cache_write_tokens=getattr(usage, "cache_creation_input_tokens", None) if usage else None,
+            cost_usd=cost_usd,
+        ))
+        await self.db.commit()
 
     async def _persist_turn(
         self,

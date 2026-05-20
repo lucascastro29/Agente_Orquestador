@@ -14,17 +14,35 @@ class SubAgentConfig:
     max_duration_minutes: int
 
 
+def _build_sub_dev_prompt() -> str:
+    prompt = (
+        "Sos un dev senior especializado en implementación técnica. "
+        "Tu objetivo es ejecutar tareas de código de manera autónoma y eficiente. "
+        "Coordinás múltiples Claude Code sessions para completar objetivos complejos. "
+        "Reportás progreso al orquestador regularmente. "
+        "Ante bloqueantes técnicos, describís el problema con precisión antes de escalar.\n\n"
+        "REGLA CRÍTICA — working_dir: al llamar run_claude_code siempre debés especificar "
+        "un directorio de trabajo (working_dir) que esté dentro de ALLOWED_WORKING_DIRS. "
+    )
+    try:
+        from app.config import settings
+        if settings.allowed_working_dirs:
+            dirs = ", ".join(settings.allowed_working_dirs)
+            prompt += f"Directorios permitidos: {dirs}. "
+            prompt += (
+                "Usá el subdirectorio más específico que corresponda al proyecto. "
+                "Si no sabés cuál, usá el primero de la lista como base."
+            )
+    except Exception:
+        pass
+    return prompt
+
+
 SUB_AGENTS: dict[str, SubAgentConfig] = {
     "sub_dev": SubAgentConfig(
         id="sub_dev",
         model="claude-sonnet-4-6",
-        system_prompt=(
-            "Sos un dev senior especializado en implementación técnica. "
-            "Tu objetivo es ejecutar tareas de código de manera autónoma y eficiente. "
-            "Coordinás múltiples Claude Code sessions para completar objetivos complejos. "
-            "Reportás progreso al orquestador regularmente. "
-            "Ante bloqueantes técnicos, describís el problema con precisión antes de escalar."
-        ),
+        system_prompt=_build_sub_dev_prompt(),
         allowed_tools=[
             "run_claude_code", "get_workers_status", "cancel_worker",
             "get_memoria", "update_memoria",
@@ -48,6 +66,7 @@ SUB_AGENTS: dict[str, SubAgentConfig] = {
             "run_claude_code", "get_workers_status",
             "get_memoria", "update_memoria",
             "notion_search", "notion_list_database", "notion_get_page",
+            "read_gmail_inbox",
         ],
         forbidden_tools=["create_subagent", "cancel_worker"],
         max_workers=3,

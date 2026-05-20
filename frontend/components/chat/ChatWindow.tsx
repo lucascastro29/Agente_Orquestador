@@ -35,22 +35,24 @@ function entryToMessage(e: MessageEntry): ChatMessage {
   };
 }
 
+const WORKER_TOOLS = new Set(["create_subagent", "run_claude_code", "cancel_worker", "get_workers_status"]);
+
 interface ChatWindowProps {
   sessionId: string | null;
   onSessionId: (id: string) => void;
   onMemoryUpdate: () => void;
+  onAgentsUpdate: () => void;
 }
 
-export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindowProps) {
+export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate, onAgentsUpdate }: ChatWindowProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [ttsEnabled, setTtsEnabled] = useState<boolean>(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("tts_enabled") === "true";
-    }
-    return false;
-  });
+  const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
+
+  useEffect(() => {
+    setTtsEnabled(localStorage.getItem("tts_enabled") === "true");
+  }, []);
 
   const toggleTts = useCallback(() => {
     setTtsEnabled((prev) => {
@@ -62,6 +64,7 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const loadedSessionRef = useRef<string | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
   // true = el usuario está en el fondo (o no scrolleó manualmente)
   const stickToBottomRef = useRef(true);
 
@@ -100,6 +103,11 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
   const send = useCallback(
     async (text: string) => {
       if (streaming) return;
+      // Desbloquear AudioContext dentro del gesto del usuario (click en Enviar)
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new AudioContext();
+      }
+      audioCtxRef.current.resume();
       // Al enviar, siempre volver al fondo
       stickToBottomRef.current = true;
 
@@ -114,6 +122,7 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
       let cost: CostDetail | undefined;
       const tools: ToolEvent[] = [];
       let memoryDirty = false;
+      let agentsDirty = false;
 
       try {
         for await (const event of streamChat(text, sessionId)) {
@@ -144,6 +153,10 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
               const last = tools[tools.length - 1];
               if (last && last.tool_name === event.tool_name) {
                 last.output = event.output;
+              }
+              if (WORKER_TOOLS.has(event.tool_name as string)) {
+                agentsDirty = true;
+                onAgentsUpdate(); // refresh inmediato, sin esperar fin del stream
               }
               break;
             }
@@ -182,18 +195,55 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
       setStreaming(false);
 
       if (memoryDirty) onMemoryUpdate();
+      if (agentsDirty) {
+        onAgentsUpdate();
+        // Polling: esperar el resultado del sub-agente y mostrarlo en el chat
+        const currentSessionId = loadedSessionRef.current;
+        if (currentSessionId) {
+          const knownIds = new Set(messages.map((m) => m.id));
+          // agregar los mensajes actuales (incluyendo el recién cerrado)
+          knownIds.add(assistantId);
+          let attempts = 0;
+          const poll = setInterval(async () => {
+            attempts++;
+            if (attempts > 60) { clearInterval(poll); return; } // máx 3 min
+            try {
+              const fresh = await getMessages(currentSessionId);
+              const newMsgs = fresh.filter((m) => !knownIds.has(m.id) && m.role === "assistant");
+              if (newMsgs.length > 0) {
+                clearInterval(poll);
+                onAgentsUpdate();
+                setMessages((prev) => [
+                  ...prev,
+                  ...newMsgs.map((m) => entryToMessage(m)),
+                ]);
+              }
+            } catch { /* silencioso */ }
+          }, 3_000);
+        }
+      }
 
-      // TTS: sintetizar y reproducir si está activo
-      if (ttsEnabled && currentText) {
-        synthesizeTTS(currentText).then((url) => {
+      // TTS: sintetizar y reproducir via AudioContext (evita bloqueo de autoplay)
+      if (ttsEnabled && currentText && audioCtxRef.current) {
+        const ctx = audioCtxRef.current;
+        synthesizeTTS(currentText).then(async (url) => {
           if (!url) return;
-          const audio = new Audio(url);
-          audio.play().catch(() => {});
-          audio.onended = () => URL.revokeObjectURL(url);
+          try {
+            const resp = await fetch(url);
+            const buf = await resp.arrayBuffer();
+            URL.revokeObjectURL(url);
+            const decoded = await ctx.decodeAudioData(buf);
+            const src = ctx.createBufferSource();
+            src.buffer = decoded;
+            src.connect(ctx.destination);
+            src.start();
+          } catch {
+            URL.revokeObjectURL(url);
+          }
         });
       }
     },
-    [sessionId, streaming, onSessionId, onMemoryUpdate, ttsEnabled]
+    [sessionId, streaming, onSessionId, onMemoryUpdate, onAgentsUpdate, ttsEnabled]
   );
 
   return (

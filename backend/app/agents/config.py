@@ -24,6 +24,17 @@ REGLAS DE SEGURIDAD — NO NEGOCIABLES:
 def _build_orchestrator_system() -> str:
     from app.config import settings
     system = _ORCHESTRATOR_SYSTEM_BASE
+
+    # Directorios de trabajo permitidos para run_claude_code y sub-agentes
+    if settings.allowed_working_dirs:
+        dirs_list = "\n".join(f"  - {d}" for d in settings.allowed_working_dirs)
+        system += f"\nDIRECTORIOS PERMITIDOS (ALLOWED_WORKING_DIRS) — únicos válidos para run_claude_code y create_subagent:\n{dirs_list}\n"
+        system += (
+            "Siempre pasá uno de estos como working_dir al llamar run_claude_code o create_subagent. "
+            "Si el usuario menciona un proyecto, elegí el subdirectorio más apropiado dentro de los permitidos. "
+            "Si no sabés cuál usar, preguntá al usuario en lugar de adivinar.\n"
+        )
+
     if settings.notion_watched_boards:
         boards_list = "\n".join(f"  - {b}" for b in settings.notion_watched_boards)
         system += f"\nNOTION — Tableros accesibles (NOTION_WATCHED_BOARDS):\n{boards_list}\n"
@@ -50,12 +61,18 @@ CALENDAR VÍA MCP (disponible en contextos de calendar y tareas programadas):
 Tenés acceso a las herramientas nativas de Google Calendar a través del MCP de Google.
 Úsalas para leer, crear y modificar eventos cuando el usuario lo pida.
 """
+    from app.agents.subagent_registry import SUB_AGENTS
+    subagent_lines = []
+    for sub in SUB_AGENTS.values():
+        subagent_lines.append(
+            f"- {sub.id}: {sub.system_prompt.split('.')[0]}. "
+            f"Hasta {sub.max_workers} workers, duración máx {sub.max_duration_minutes} min, "
+            f"política '{sub.approval_policy}'. "
+            f"Tools: {', '.join(sub.allowed_tools)}."
+        )
+    system += "\nSUB-AGENTES DISPONIBLES (tool: create_subagent):\n"
+    system += "\n".join(subagent_lines)
     system += """
-SUB-AGENTES DISPONIBLES (tool: create_subagent):
-- sub_dev: Dev senior autónomo para tareas técnicas complejas (implementar features, refactors,
-  debugging). Puede lanzar hasta 5 workers de Claude Code en paralelo. Duración máxima: 2h.
-- sub_analista: Analista de datos para investigación, síntesis y reportes. Hasta 3 workers.
-  No modifica archivos de producción. Duración máxima: 1h.
 
 Cuándo crear un sub-agente:
 - La tarea requiere múltiples sesiones de Claude Code coordinadas

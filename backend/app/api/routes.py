@@ -507,13 +507,19 @@ async def list_agents(
     from app.agents.subagent_registry import SUB_AGENTS
     from app.tools.registry import registry as tool_registry
 
-    # Contar workers activos y sesiones por agent_id
+    # Contar workers activos, totales y sesiones por agent_id
     active_q = await db.execute(
         select(Worker.agent_id, func.count(Worker.id).label("cnt"))
         .where(Worker.status.in_(["pending", "running", "waiting_input"]))
         .group_by(Worker.agent_id)
     )
     active_by_agent: dict[str, int] = {r.agent_id: r.cnt for r in active_q}
+
+    total_runs_q = await db.execute(
+        select(Worker.agent_id, func.count(Worker.id).label("cnt"))
+        .group_by(Worker.agent_id)
+    )
+    total_runs_by_agent: dict[str, int] = {r.agent_id: r.cnt for r in total_runs_q}
 
     sessions_q = await db.execute(
         select(DBSession.agent_id, func.count(DBSession.id).label("cnt"))
@@ -535,6 +541,7 @@ async def list_agents(
             approval_policy=agent.approval_policy,
             active_workers=active_by_agent.get(agent.id, 0),
             total_sessions=sessions_by_agent.get(agent.id, 0),
+            total_runs=total_runs_by_agent.get(agent.id, 0),
         ))
 
     # Sub-agentes
@@ -548,6 +555,7 @@ async def list_agents(
             approval_policy=sub.approval_policy,
             active_workers=active_by_agent.get(sub.id, 0),
             total_sessions=sessions_by_agent.get(sub.id, 0),
+            total_runs=total_runs_by_agent.get(sub.id, 0),
         ))
 
     return result
@@ -656,7 +664,7 @@ def _worker_out(w: Worker) -> WorkerOut:
     return WorkerOut(
         id=w.id, parent_id=w.parent_id, agent_id=w.agent_id, session_id=w.session_id,
         type=w.type, status=w.status, prompt=w.prompt, working_dir=w.working_dir,
-        result_summary=w.result_summary, cost_usd=w.cost_usd,
+        output=w.output, result_summary=w.result_summary, cost_usd=w.cost_usd,
         notion_task_id=w.notion_task_id, error=w.error, notified=w.notified,
         created_at=w.created_at, started_at=w.started_at, finished_at=w.finished_at,
     )

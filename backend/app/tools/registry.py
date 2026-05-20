@@ -245,7 +245,7 @@ registry.register(LocalTool(
         "required": ["prompt", "working_dir"],
     },
     handler=_handle_run_claude_code,
-    requires_confirmation=True,
+    requires_confirmation=False,
 ))
 
 registry.register(LocalTool(
@@ -456,12 +456,48 @@ registry.register(LocalTool(
 
 # --- Tools: Gmail + Calendar activos (Fase 9) ---
 
+import time as _time
+_google_token_cache: dict = {"token": "", "expires_at": 0.0}
+
+
+async def _get_google_access_token() -> str:
+    """Devuelve un access token válido. Usa refresh token si está configurado,
+    cae a gmail_oauth_token legacy si no."""
+    from app.config import settings
+    import httpx
+
+    # Preferir refresh token (no vence)
+    if settings.google_client_id and settings.google_client_secret and settings.google_refresh_token:
+        now = _time.time()
+        if _google_token_cache["token"] and now < _google_token_cache["expires_at"] - 60:
+            return _google_token_cache["token"]
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "client_id": settings.google_client_id,
+                    "client_secret": settings.google_client_secret,
+                    "refresh_token": settings.google_refresh_token,
+                    "grant_type": "refresh_token",
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+            _google_token_cache["token"] = data["access_token"]
+            _google_token_cache["expires_at"] = now + data.get("expires_in", 3600)
+            return _google_token_cache["token"]
+
+    # Fallback: access token legacy (puede estar vencido)
+    return settings.gmail_oauth_token or settings.calendar_oauth_token
+
+
 async def _handle_read_gmail_inbox(max_results: int = 10, only_unread: bool = True) -> dict:
     from app.config import settings
-    if not settings.gmail_oauth_token:
-        return {"error": "Gmail no configurado (GMAIL_OAUTH_TOKEN vacío en .env)"}
+    if not settings.gmail_oauth_token and not settings.google_refresh_token:
+        return {"error": "Gmail no configurado — agregá GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET y GOOGLE_REFRESH_TOKEN en .env"}
     import httpx
-    headers = {"Authorization": f"Bearer {settings.gmail_oauth_token}"}
+    token = await _get_google_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
     q = "is:unread" if only_unread else ""
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.get(
@@ -510,13 +546,14 @@ registry.register(LocalTool(
 
 async def _handle_read_calendar_events(max_results: int = 10, days_ahead: int = 7) -> dict:
     from app.config import settings
-    if not settings.calendar_oauth_token:
-        return {"error": "Calendar no configurado (CALENDAR_OAUTH_TOKEN vacío en .env)"}
+    if not settings.calendar_oauth_token and not settings.google_refresh_token:
+        return {"error": "Calendar no configurado — agregá GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET y GOOGLE_REFRESH_TOKEN en .env"}
     import httpx
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
     time_max = now + timedelta(days=days_ahead)
-    headers = {"Authorization": f"Bearer {settings.calendar_oauth_token}"}
+    token = await _get_google_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
     params = {
         "timeMin": now.isoformat(),
         "timeMax": time_max.isoformat(),
@@ -703,7 +740,7 @@ registry.register(LocalTool(
         "required": ["name", "cron_expr", "action_type", "action_config"],
     },
     handler=_handle_schedule_task,
-    requires_confirmation=True,
+    requires_confirmation=False,
 ))
 
 registry.register(LocalTool(
@@ -769,7 +806,7 @@ registry.register(LocalTool(
         "required": ["type", "name", "objective"],
     },
     handler=_handle_create_subagent,
-    requires_confirmation=True,
+    requires_confirmation=False,
 ))
 
 

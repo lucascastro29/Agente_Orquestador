@@ -12,32 +12,61 @@ def _run_sync(coro):
 
 
 async def _update_worker(worker_id: str, **kwargs):
-    from app.db.session import AsyncSessionLocal
+    from app.db.session import CelerySessionLocal
     from app.workers.manager import WorkerManager
-    async with AsyncSessionLocal() as db:
+    async with CelerySessionLocal() as db:
         mgr = WorkerManager(db)
         await mgr.update_status(worker_id, kwargs.pop("status"), **kwargs)
 
 
 async def _append_output(worker_id: str, chunk: str):
-    from app.db.session import AsyncSessionLocal
+    from app.db.session import CelerySessionLocal
     from app.workers.manager import WorkerManager
-    async with AsyncSessionLocal() as db:
+    async with CelerySessionLocal() as db:
         mgr = WorkerManager(db)
         await mgr.append_output(worker_id, chunk)
 
 
 async def _notify_telegram(session_id: str, text: str):
     """Notifica al usuario por Telegram si la sesión tiene chat_id asociado."""
-    from app.db.session import AsyncSessionLocal
+    from app.db.session import CelerySessionLocal
     from app.db.models import Session as DBSession
     from sqlalchemy import select
-    async with AsyncSessionLocal() as db:
+    async with CelerySessionLocal() as db:
         result = await db.execute(select(DBSession).where(DBSession.id == session_id))
         session = result.scalar_one_or_none()
         if session and session.channel == "telegram" and session.external_chat_id:
             from app.telegram.client import send_message
             await send_message(session.external_chat_id, text)
+
+
+async def _save_assistant_message(session_id: str, text: str):
+    """Persiste el resultado del sub-agente como mensaje del asistente en la sesión web."""
+    import uuid
+    from app.db.session import CelerySessionLocal
+    from app.db.models import Message as DBMessage, Session as DBSession
+    from sqlalchemy import select, func
+    async with CelerySessionLocal() as db:
+        pos_q = await db.execute(
+            select(func.coalesce(func.max(DBMessage.position), -1))
+            .where(DBMessage.session_id == session_id)
+        )
+        next_pos = pos_q.scalar() + 1
+        msg = DBMessage(
+            id=str(uuid.uuid4()),
+            session_id=session_id,
+            position=next_pos,
+            role="assistant",
+            content=[{"type": "text", "text": text}],
+        )
+        db.add(msg)
+        # Actualizar updated_at de la sesión para que el frontend lo detecte
+        sess_q = await db.execute(select(DBSession).where(DBSession.id == session_id))
+        sess = sess_q.scalar_one_or_none()
+        if sess:
+            from datetime import datetime, timezone
+            sess.updated_at = datetime.now(timezone.utc)
+        await db.commit()
 
 
 async def _sync_notion_complete(notion_task_id: str, result_summary: str, cost_usd: float):
@@ -55,7 +84,7 @@ def execute_claude_code(self, worker_id: str, prompt: str, working_dir: str):
 
 
 async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: str):
-    from app.db.session import AsyncSessionLocal
+    from app.db.session import CelerySessionLocal as AsyncSessionLocal
     from app.workers.manager import WorkerManager
 
     # Recuperar datos del worker
@@ -130,7 +159,7 @@ def run_due_scheduled_tasks() -> None:
 async def _run_due_scheduled_tasks_async() -> None:
     from datetime import datetime, timezone
     from croniter import croniter
-    from app.db.session import AsyncSessionLocal
+    from app.db.session import CelerySessionLocal as AsyncSessionLocal
     from app.db.models import ScheduledTask
     from sqlalchemy import select
 
@@ -167,7 +196,7 @@ async def _run_due_scheduled_tasks_async() -> None:
 
 
 async def _execute_scheduled_task_action(task_id: str, action_type: str, action_config: dict) -> None:
-    from app.db.session import AsyncSessionLocal
+    from app.db.session import CelerySessionLocal as AsyncSessionLocal
     from app.agents.runner import AgentRunner
     from app.db.models import Session as DBSession
 
@@ -249,7 +278,7 @@ async def _execute_subagent_async(worker_id: str, subagent_type: str, objective:
     from app.agents.subagent_registry import get_subagent
     from app.agents.config import AgentConfig
     from app.agents.runner import AgentRunner
-    from app.db.session import AsyncSessionLocal
+    from app.db.session import CelerySessionLocal as AsyncSessionLocal
 
     await _update_worker(worker_id, status="running")
 
@@ -285,9 +314,12 @@ async def _execute_subagent_async(worker_id: str, subagent_type: str, objective:
             output=output,
             result_summary=output[:500],
         )
-        msg = f"✅ Sub-agente {subagent_type} terminó\n\n{output[:400]}"
-        await _notify_telegram(session_id, msg)
+        msg = f"✅ **{subagent_type}** terminó:\n\n{output}"
+        await _save_assistant_message(session_id, msg)
+        await _notify_telegram(session_id, msg[:400])
 
     except Exception as exc:
+        err_msg = f"❌ **{subagent_type}** falló: {exc}"
         await _update_worker(worker_id, status="failed", error=str(exc))
-        await _notify_telegram(session_id, f"❌ Sub-agente {worker_id[:8]} falló: {exc}")
+        await _save_assistant_message(session_id, err_msg)
+        await _notify_telegram(session_id, err_msg)

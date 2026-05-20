@@ -10,6 +10,7 @@ const SESSION_KEY = "ao_session_id";
 export default function Home() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [memoryRefresh, setMemoryRefresh] = useState(0);
+  const [agentsRefresh, setAgentsRefresh] = useState(0);
 
   useEffect(() => {
     const saved = localStorage.getItem(SESSION_KEY);
@@ -18,6 +19,10 @@ export default function Home() {
 
   const handleMemoryUpdate = useCallback(() => {
     setMemoryRefresh((n) => n + 1);
+  }, []);
+
+  const handleAgentsUpdate = useCallback(() => {
+    setAgentsRefresh((n) => n + 1);
   }, []);
 
   const handleSelectSession = useCallback((id: string | null) => {
@@ -46,10 +51,11 @@ export default function Home() {
             sessionId={sessionId}
             onSessionId={handleSessionId}
             onMemoryUpdate={handleMemoryUpdate}
+            onAgentsUpdate={handleAgentsUpdate}
           />
         </div>
       </main>
-      <RightPanel memoryRefresh={memoryRefresh} />
+      <RightPanel memoryRefresh={memoryRefresh} agentsRefresh={agentsRefresh} />
     </div>
   );
 }

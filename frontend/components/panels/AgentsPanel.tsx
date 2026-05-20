@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { getAgents, getSchedule, type AgentEntry, type ScheduleTaskEntry } from "@/lib/api";
+import { getAgents, getSchedule, getScheduledTasks, toggleScheduledTask, deleteScheduledTask, type AgentEntry, type ScheduleTaskEntry, type UserScheduledTask } from "@/lib/api";
 
 const MODEL_SHORT: Record<string, string> = {
   "claude-sonnet-4-6":      "Sonnet 4.6",
@@ -33,6 +33,7 @@ function ActiveDot({ count }: { count: number }) {
 
 function AgentCard({ agent }: { agent: AgentEntry }) {
   const [expanded, setExpanded] = useState(false);
+  const isActive = agent.active_workers > 0;
 
   return (
     <div className="border border-border rounded-md p-2 space-y-1 text-xs">
@@ -42,12 +43,23 @@ function AgentCard({ agent }: { agent: AgentEntry }) {
           <ActiveDot count={agent.active_workers} />
           <span className="font-semibold truncate">{agent.id}</span>
         </div>
-        <Badge
-          variant="outline"
-          className={`shrink-0 text-[10px] ${TYPE_COLOR[agent.type] ?? ""}`}
-        >
-          {TYPE_LABEL[agent.type] ?? agent.type}
-        </Badge>
+        <div className="flex items-center gap-1 shrink-0">
+          <span
+            className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+              isActive
+                ? "bg-green-100 text-green-800"
+                : "bg-gray-100 text-gray-500"
+            }`}
+          >
+            {isActive ? `activo · ${agent.active_workers} worker${agent.active_workers > 1 ? "s" : ""}` : "inactivo"}
+          </span>
+          <Badge
+            variant="outline"
+            className={`text-[10px] ${TYPE_COLOR[agent.type] ?? ""}`}
+          >
+            {TYPE_LABEL[agent.type] ?? agent.type}
+          </Badge>
+        </div>
       </div>
 
       {/* Modelo */}
@@ -57,14 +69,17 @@ function AgentCard({ agent }: { agent: AgentEntry }) {
 
       {/* Stats */}
       <div className="flex gap-3 text-muted-foreground">
-        <span>
-          <span className="text-foreground font-medium">{agent.active_workers}</span> activos
-        </span>
-        <span>
-          <span className="text-foreground font-medium">{agent.total_sessions}</span> sesiones
-        </span>
+        {agent.type === "orchestrator" ? (
+          <span>
+            <span className="text-foreground font-medium">{agent.total_sessions}</span> sesiones
+          </span>
+        ) : (
+          <span>
+            <span className="text-foreground font-medium">{agent.total_runs}</span> ejecuciones
+          </span>
+        )}
         {agent.max_workers != null && (
-          <span>max <span className="text-foreground font-medium">{agent.max_workers}</span></span>
+          <span>max <span className="text-foreground font-medium">{agent.max_workers}</span> workers</span>
         )}
       </div>
 
@@ -129,16 +144,76 @@ function ScheduleCard({ task }: { task: ScheduleTaskEntry }) {
   );
 }
 
-export function AgentsPanel() {
+function UserTaskCard({ task, onRefresh }: { task: UserScheduledTask; onRefresh: () => void }) {
+  const nextRun = task.next_run_at
+    ? new Date(task.next_run_at).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })
+    : null;
+  const lastRun = task.last_run_at
+    ? new Date(task.last_run_at).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })
+    : null;
+
+  async function handleToggle() {
+    await toggleScheduledTask(task.id, !task.enabled);
+    onRefresh();
+  }
+
+  async function handleDelete() {
+    await deleteScheduledTask(task.id);
+    onRefresh();
+  }
+
+  return (
+    <div className="border border-border rounded-md p-2 space-y-1 text-xs">
+      <div className="flex items-center justify-between gap-1">
+        <span className="font-semibold truncate">{task.name}</span>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={handleToggle}
+            className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium transition-colors ${
+              task.enabled
+                ? "bg-green-100 text-green-800 hover:bg-green-200"
+                : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+            }`}
+          >
+            {task.enabled ? "activo" : "inactivo"}
+          </button>
+          <button
+            onClick={handleDelete}
+            className="text-muted-foreground hover:text-destructive transition-colors px-1"
+            title="Eliminar tarea"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+      {task.description && (
+        <div className="text-muted-foreground truncate">{task.description}</div>
+      )}
+      <div className="text-muted-foreground">⏱ {task.cron_expr} · {task.action_type}</div>
+      <div className="flex gap-3 text-muted-foreground">
+        {lastRun && <span>último: {lastRun}</span>}
+        {nextRun && <span>próximo: {nextRun}</span>}
+        {task.run_count > 0 && <span>{task.run_count} ejecuciones</span>}
+      </div>
+      {task.last_error && (
+        <div className="text-red-500 truncate text-[10px]">⚠ {task.last_error}</div>
+      )}
+    </div>
+  );
+}
+
+export function AgentsPanel({ refreshSignal = 0 }: { refreshSignal?: number }) {
   const [agents, setAgents] = useState<AgentEntry[]>([]);
   const [schedule, setSchedule] = useState<ScheduleTaskEntry[]>([]);
+  const [userTasks, setUserTasks] = useState<UserScheduledTask[]>([]);
   const [loading, setLoading] = useState(true);
 
   async function load() {
     try {
-      const [a, s] = await Promise.all([getAgents(), getSchedule()]);
+      const [a, s, u] = await Promise.all([getAgents(), getSchedule(), getScheduledTasks()]);
       setAgents(a);
       setSchedule(s);
+      setUserTasks(u);
     } catch {
       // silencioso
     } finally {
@@ -146,11 +221,17 @@ export function AgentsPanel() {
     }
   }
 
+  // Refresco periódico base
   useEffect(() => {
     load();
     const id = setInterval(load, 10_000);
     return () => clearInterval(id);
   }, []);
+
+  // Refresco inmediato cuando el orquestador ejecuta una tool de workers/agentes
+  useEffect(() => {
+    if (refreshSignal > 0) load();
+  }, [refreshSignal]);
 
   if (loading) return <p className="text-sm text-muted-foreground p-2">Cargando agentes…</p>;
 
@@ -168,10 +249,24 @@ export function AgentsPanel() {
         </div>
       </section>
 
-      {/* Tareas programadas */}
+      {/* Tareas creadas por el agente */}
+      {userTasks.length > 0 && (
+        <section>
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+            Tareas del agente
+          </p>
+          <div className="space-y-2">
+            {userTasks.map((t) => (
+              <UserTaskCard key={t.id} task={t} onRefresh={load} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Watchers del sistema */}
       <section>
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-          Tareas programadas
+          Watchers sistema
         </p>
         <div className="space-y-2">
           {schedule.map((t) => (

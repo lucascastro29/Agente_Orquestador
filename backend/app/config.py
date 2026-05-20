@@ -25,13 +25,18 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     whisper_model: str = "base"  # tiny | base | small | medium — solo aplica al modo local
 
+    # Google OAuth (refresh token — no vence, se usa para obtener access tokens frescos)
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_refresh_token: str = ""
+
     # Gmail
-    gmail_oauth_token: str = ""
+    gmail_oauth_token: str = ""        # legacy: access token directo (vence en 1h)
     gmail_watcher_enabled: bool = False
     gmail_watched_labels: list[str] = ["INBOX"]
 
     # Calendar
-    calendar_oauth_token: str = ""
+    calendar_oauth_token: str = ""     # legacy: access token directo (vence en 1h)
     calendar_watcher_enabled: bool = False
 
     # Chrome agent

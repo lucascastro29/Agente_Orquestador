@@ -95,6 +95,7 @@ class WorkerOut(BaseModel):
     status: str
     prompt: str
     working_dir: str | None
+    output: str | None
     result_summary: str | None
     cost_usd: float
     notion_task_id: str | None
@@ -118,6 +119,7 @@ class AgentOut(BaseModel):
     approval_policy: str
     active_workers: int
     total_sessions: int
+    total_runs: int      # todos los workers (cualquier estado)
 
 
 class ScheduleTaskOut(BaseModel):

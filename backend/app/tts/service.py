@@ -92,9 +92,17 @@ class TTSService:
         loop = asyncio.get_event_loop()
 
         def _gen() -> bytes:
+            chunks = list(self._voice.synthesize(cleaned))  # type: ignore[union-attr]
+            if not chunks:
+                return b""
+            first = chunks[0]
             buf = io.BytesIO()
             with wave.open(buf, "wb") as wf:
-                self._voice.synthesize(cleaned, wf)  # type: ignore[union-attr]
+                wf.setnchannels(first.sample_channels)
+                wf.setsampwidth(first.sample_width)
+                wf.setframerate(first.sample_rate)
+                for chunk in chunks:
+                    wf.writeframes(chunk.audio_int16_bytes)
             return buf.getvalue()
 
         return await loop.run_in_executor(None, _gen)
