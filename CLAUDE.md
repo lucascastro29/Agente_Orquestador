@@ -35,7 +35,7 @@ FASE 5: [x] Sub-agentes especializados
 FASE 6: [x] Gmail + Calendar + Watchers
 FASE 7: [x] Claude Code bridge
 FASE 7.5: [x] Voz — hotkey Mac + audio Telegram
-FASE 8: [ ] Agente Chrome
+FASE 8: [x] Agente Chrome
 FASE 9: [x] Tareas programadas + Gmail/Calendar activos + memoria de sesión
 ```
 
@@ -72,6 +72,9 @@ read_gmail_inbox, read_calendar_events
 
 # Tareas programadas
 schedule_task, list_scheduled_tasks, delete_scheduled_task, toggle_scheduled_task
+
+# Chrome agent (Fase 8)
+chrome_navigate, chrome_screenshot
 ```
 
 ### Categorías de memoria disponibles
@@ -83,7 +86,7 @@ objetivo_actual | proyecto | preferencia | persona | recordatorio | nota_libre |
 ### Router: categorías disponibles
 ```
 consulta_simple | notion_tasks | coding | admin_email | admin_calendar |
-analisis | arquitectura | tareas_programadas
+analisis | arquitectura | tareas_programadas | navegacion_chrome
 ```
 
 ### DB: tablas existentes
@@ -120,6 +123,17 @@ components/panels/AgentsPanel.tsx
 - **Telegram**: envía audio OGG Opus via `sendVoice` después de cada respuesta de texto
 - Dependencias del sistema: `ffmpeg` (conversión WAV→OGG), `espeak-ng` (fonemización)
 - Endpoint: `POST /api/tts/synthesize` → devuelve `audio/wav`
+
+### Chrome agent (Fase 8)
+- Motor: **Playwright** (`playwright==1.44.0`) — Chromium headless
+- `app/chrome/security.py` — `ChromeSecurityChecker`: valida dominio y detecta injection
+- `app/chrome/agent.py` — `ChromeAgent`: navega, extrae texto visible, detecta texto oculto, screenshots
+- Dominios controlados por `CHROME_ALLOWED_DOMAINS` en `.env` (default: `instagram.com`, `linkedin.com`)
+- Detecta texto oculto: `display:none`, `visibility:hidden`, `opacity:0`, `font-size<2px`
+- Si detecta injection: bloquea el contenido, captura screenshot, devuelve `flagged=True`
+- Informa cuando el sitio requiere login (señales en texto visible)
+- Tools: `chrome_navigate` (texto + screenshot opcional), `chrome_screenshot` (solo imagen)
+- Router: categoría `navegacion_chrome` → domain context con solo tools Chrome + memoria
 
 ### Celery beat schedule actual
 ```python

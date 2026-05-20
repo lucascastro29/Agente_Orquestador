@@ -434,7 +434,63 @@ SECURITY_STRICT_MODE=true
 
 ---
 
-## 9. Checklist de seguridad antes de agregar un agente nuevo
+## 9. Checklist de seguridad — Agente Chrome (Fase 8)
+
+### Respuestas documentadas
+
+- [x] **Fuentes externas**: páginas web públicas de dominios en `CHROME_ALLOWED_DOMAINS` únicamente.
+  No lee archivos locales, mails ni APIs. Solo HTTP/HTTPS hacia dominios autorizados.
+
+- [x] **Tools que puede ejecutar**: `chrome_navigate`, `chrome_screenshot`. Solo lectura.
+  No puede escribir, hacer POST, ni enviar datos hacia afuera.
+
+- [x] **Dominios autorizados** (`CHROME_ALLOWED_DOMAINS`):
+  - `instagram.com` — perfiles y posts públicos
+  - `linkedin.com` — perfiles y páginas de empresa públicos
+  _(Se pueden agregar más vía `.env` sin tocar código)_
+
+- [x] **Política de aprobación**: `auto` para `chrome_navigate` y `chrome_screenshot`.
+  El router solo incluye estas tools cuando la categoría es `navegacion_chrome`.
+
+- [x] **Credenciales**: ninguna. El agente opera como visitante anónimo.
+  No almacena cookies entre sesiones. No hace login automático.
+
+- [x] **Acciones hacia afuera**: ninguna. Solo GET. Nunca POST, PUT, DELETE.
+  No puede enviar datos a URLs generadas desde el contenido de la página.
+
+- [x] **Rate limit**: 30 navegaciones / 60 minutos (definido en `RATE_LIMITS` de sección 5.3).
+
+- [x] **Timeout máximo**: 30 segundos por página, 5 minutos por sesión Chrome.
+
+- [x] **Prompt injection desde contenido web**:
+  1. Extrae texto oculto (display:none, opacity:0, font-size<2px, color==background).
+  2. Corre `ChromeSecurityChecker.check_injection()` sobre texto oculto Y texto visible.
+  3. Si detecta patrón: bloquea, captura screenshot, notifica al usuario, no pasa el contenido al modelo.
+  4. El modelo nunca ve contenido marcado como flagged sin confirmación del usuario.
+
+- [x] **Notificación al usuario si algo sale mal**:
+  - Dominio no autorizado → respuesta directa al usuario con el dominio bloqueado.
+  - Injection detectada → alerta con screenshot en Telegram + SecurityEvent en DB.
+  - Login requerido → informa al usuario que el sitio requiere autenticación.
+  - Error de navegación → informa el error sin reintentar automáticamente.
+
+### Acciones prohibidas (hardcoded en `ChromeSecurityChecker`)
+
+```python
+CHROME_BLOCKED_ACTIONS = [
+    "click_install_extension",
+    "click_download",
+    "accept_browser_permission",   # cámara, micrófono, ubicación, notificaciones
+    "execute_injected_javascript",
+    "access_localstorage",
+    "navigate_to_generated_url",   # URLs generadas desde contenido de la página
+    "fill_login_form",             # nunca ingresar credenciales automáticamente
+]
+```
+
+---
+
+## 10. Checklist de seguridad antes de agregar un agente nuevo
 
 Antes de implementar cualquier agente nuevo (sub-agente, watcher, agente Chrome, etc.),
 responder estas preguntas y documentar las respuestas en este archivo:
