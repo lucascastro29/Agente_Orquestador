@@ -18,7 +18,8 @@ DOMAIN_CONTEXTS: dict[str, DomainContext] = {
     "notion_tasks": DomainContext(
         tools=[
             "notion_search", "notion_list_database", "notion_get_page",
-            "notion_get_tasks", "run_claude_code", "get_memoria", "update_memoria",
+            "notion_get_tasks", "notion_create_task", "run_claude_code",
+            "get_memoria", "update_memoria",
         ],
         memory_categories=["proyecto", "objetivo_actual"],
     ),
@@ -27,13 +28,24 @@ DOMAIN_CONTEXTS: dict[str, DomainContext] = {
         memory_categories=["proyecto"],
     ),
     "admin_email": DomainContext(
-        tools=["get_memoria", "update_memoria"],
+        tools=["read_gmail_inbox", "get_memoria", "update_memoria", "notion_create_task"],
         memory_categories=["preferencia", "persona"],
         use_mcp=True,
     ),
     "admin_calendar": DomainContext(
-        tools=["get_memoria", "update_memoria"],
+        tools=["read_calendar_events", "get_memoria", "update_memoria", "notion_create_task"],
         memory_categories=["preferencia", "recordatorio"],
+        use_mcp=True,
+    ),
+    "tareas_programadas": DomainContext(
+        tools=[
+            "schedule_task", "list_scheduled_tasks", "delete_scheduled_task", "toggle_scheduled_task",
+            "read_gmail_inbox", "read_calendar_events",
+            "notion_search", "notion_create_task", "notion_update_task",
+            "run_claude_code", "create_subagent",
+            "get_memoria", "update_memoria",
+        ],
+        memory_categories=["proyecto", "objetivo_actual", "recordatorio"],
         use_mcp=True,
     ),
     "analisis": DomainContext(
