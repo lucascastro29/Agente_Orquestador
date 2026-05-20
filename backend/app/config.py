@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     calendar_oauth_token: str = ""
     calendar_watcher_enabled: bool = False
 
+    # Chrome agent
+    chrome_allowed_domains: list[str] = ["instagram.com", "linkedin.com"]
+
     # Security
     allowed_working_dirs: list[str] = []
     max_cost_per_session_usd: float = 5.0
@@ -43,6 +46,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "notion_watched_boards", "allowed_working_dirs", "gmail_watched_labels",
+        "chrome_allowed_domains",
         mode="before",
     )
     @classmethod

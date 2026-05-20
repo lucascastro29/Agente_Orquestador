@@ -8,7 +8,7 @@ from app.config import settings
 ROUTER_SYSTEM = """
 Clasificás mensajes. Solo JSON, sin texto extra ni markdown.
 {
-  "category": "consulta_simple|notion_tasks|coding|admin_email|admin_calendar|analisis|arquitectura|tareas_programadas",
+  "category": "consulta_simple|notion_tasks|coding|admin_email|admin_calendar|analisis|arquitectura|tareas_programadas|navegacion_chrome",
   "complexity": "low|medium|high",
   "tools_needed": [...],
   "memory_categories": [...],
@@ -25,6 +25,7 @@ Criterios de category:
 - analisis: análisis de datos, reportes, investigación
 - arquitectura: diseño de sistemas, decisiones técnicas de alto nivel
 - tareas_programadas: programar, agendar, automatizar tareas recurrentes, cron, recordatorios automáticos
+- navegacion_chrome: navegar sitios web, leer perfiles de Instagram o LinkedIn, capturar screenshots de páginas
 
 Criterios de complexity:
 - low: respuesta directa sin tools, sin contexto especial

@@ -771,3 +771,74 @@ registry.register(LocalTool(
     handler=_handle_create_subagent,
     requires_confirmation=True,
 ))
+
+
+# --- Chrome agent (Fase 8) ---
+
+async def _handle_chrome_navigate(url: str, screenshot: bool = False) -> dict:
+    from app.chrome.agent import ChromeAgent
+    agent = ChromeAgent()
+    result = await agent.navigate(url, take_screenshot=screenshot)
+    return {
+        "url": result.url,
+        "title": result.title,
+        "text": result.text_content,
+        "screenshot_b64": result.screenshot_b64,
+        "flagged": result.flagged,
+        "flag_reason": result.flag_reason,
+        "needs_login": result.needs_login,
+        "error": result.error,
+        "meta": result.meta,
+    }
+
+
+async def _handle_chrome_screenshot(url: str) -> dict:
+    from app.chrome.agent import ChromeAgent
+    agent = ChromeAgent()
+    result = await agent.screenshot(url)
+    return {
+        "url": result.url,
+        "title": result.title,
+        "screenshot_b64": result.screenshot_b64,
+        "flagged": result.flagged,
+        "flag_reason": result.flag_reason,
+        "error": result.error,
+    }
+
+
+registry.register(LocalTool(
+    name="chrome_navigate",
+    description=(
+        "Navega a una URL en un browser headless y devuelve el texto visible de la página. "
+        "Solo funciona con dominios autorizados (CHROME_ALLOWED_DOMAINS). "
+        "Detecta automáticamente si el sitio requiere login. "
+        "Útil para leer perfiles de Instagram, LinkedIn y otros sitios públicos."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "URL completa a navegar (debe ser de un dominio autorizado)."},
+            "screenshot": {"type": "boolean", "default": False, "description": "Si true, incluye screenshot en base64 en la respuesta."},
+        },
+        "required": ["url"],
+    },
+    handler=_handle_chrome_navigate,
+    requires_confirmation=False,
+))
+
+registry.register(LocalTool(
+    name="chrome_screenshot",
+    description=(
+        "Captura una screenshot de una URL y la devuelve en base64. "
+        "Solo funciona con dominios autorizados (CHROME_ALLOWED_DOMAINS)."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "URL completa a capturar."},
+        },
+        "required": ["url"],
+    },
+    handler=_handle_chrome_screenshot,
+    requires_confirmation=False,
+))

@@ -59,6 +59,10 @@ DOMAIN_CONTEXTS: dict[str, DomainContext] = {
         tools=None,
         memory_categories=None,
     ),
+    "navegacion_chrome": DomainContext(
+        tools=["chrome_navigate", "chrome_screenshot", "get_memoria", "update_memoria"],
+        memory_categories=["proyecto", "nota_libre"],
+    ),
 }
 
 
