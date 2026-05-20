@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { Volume2, VolumeX } from "lucide-react";
 import { MessageBubble, type ChatMessage, type CostDetail, type ToolEvent } from "./MessageBubble";
 import { InputBar } from "./InputBar";
-import { streamChat, getMessages, type MessageEntry } from "@/lib/api";
+import { streamChat, getMessages, synthesizeTTS, type MessageEntry } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 function randomId() {
   return Math.random().toString(36).slice(2);
@@ -43,6 +45,20 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [ttsEnabled, setTtsEnabled] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("tts_enabled") === "true";
+    }
+    return false;
+  });
+
+  const toggleTts = useCallback(() => {
+    setTtsEnabled((prev) => {
+      const next = !prev;
+      localStorage.setItem("tts_enabled", String(next));
+      return next;
+    });
+  }, []);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const loadedSessionRef = useRef<string | null>(null);
@@ -102,9 +118,14 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
       try {
         for await (const event of streamChat(text, sessionId)) {
           switch (event.type) {
-            case "session_id":
-              onSessionId(event.session_id as string);
+            case "session_id": {
+              const newId = event.session_id as string;
+              // Marcar como ya cargada ANTES de que onSessionId dispare el useEffect,
+              // para que no borre los mensajes en curso ni haga fetch vacío al DB.
+              loadedSessionRef.current = newId;
+              onSessionId(newId);
               break;
+            }
 
             case "text_delta":
               currentText += event.text as string;
@@ -161,12 +182,38 @@ export function ChatWindow({ sessionId, onSessionId, onMemoryUpdate }: ChatWindo
       setStreaming(false);
 
       if (memoryDirty) onMemoryUpdate();
+
+      // TTS: sintetizar y reproducir si está activo
+      if (ttsEnabled && currentText) {
+        synthesizeTTS(currentText).then((url) => {
+          if (!url) return;
+          const audio = new Audio(url);
+          audio.play().catch(() => {});
+          audio.onended = () => URL.revokeObjectURL(url);
+        });
+      }
     },
-    [sessionId, streaming, onSessionId, onMemoryUpdate]
+    [sessionId, streaming, onSessionId, onMemoryUpdate, ttsEnabled]
   );
 
   return (
     <div className="flex flex-col h-full min-h-0">
+      {/* Barra superior con toggle TTS */}
+      <div className="flex justify-end px-4 pt-2 pb-0">
+        <button
+          onClick={toggleTts}
+          title={ttsEnabled ? "Desactivar narración en audio" : "Activar narración en audio"}
+          className={cn(
+            "flex items-center gap-1 px-2 py-1 rounded-lg text-xs transition-colors",
+            ttsEnabled
+              ? "bg-primary/10 text-primary hover:bg-primary/20"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted"
+          )}
+        >
+          {ttsEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+          <span>{ttsEnabled ? "TTS ON" : "TTS"}</span>
+        </button>
+      </div>
       <div
         ref={scrollRef}
         onScroll={handleScroll}

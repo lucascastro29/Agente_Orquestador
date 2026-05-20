@@ -106,6 +106,13 @@ export async function getSessions(): Promise<SessionEntry[]> {
   return res.json();
 }
 
+export async function deleteSession(id: string): Promise<void> {
+  await fetch(`${BASE}/api/sessions/${id}`, {
+    method: "DELETE",
+    headers: headers(),
+  });
+}
+
 export async function getMessages(sessionId: string): Promise<MessageEntry[]> {
   const res = await fetch(`${BASE}/api/sessions/${sessionId}/messages`, {
     headers: headers(),
@@ -165,4 +172,19 @@ export async function getAgents(): Promise<AgentEntry[]> {
 export async function getSchedule(): Promise<ScheduleTaskEntry[]> {
   const res = await fetch(`${BASE}/api/schedule`, { headers: headers() });
   return res.json();
+}
+
+export async function synthesizeTTS(text: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${BASE}/api/tts/synthesize`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  } catch {
+    return null;
+  }
 }
