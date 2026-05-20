@@ -178,5 +178,15 @@ async def run_polling() -> None:
                     for chunk in _split_message(response_text):
                         await send_message(chat_id, chunk, parse_mode="HTML")
 
+                    # TTS: sintetizar respuesta y enviar como audio de voz
+                    try:
+                        from app.tts.service import tts_service
+                        from app.telegram.client import send_voice
+                        ogg = await tts_service.synthesize_ogg(result.text or "")
+                        if ogg:
+                            await send_voice(chat_id, ogg)
+                    except Exception as _tts_exc:
+                        logger.debug("TTS Telegram error (no crítico): %s", _tts_exc)
+
             except Exception as exc:
                 logger.exception("Error procesando update %s: %s", update.get("update_id"), exc)

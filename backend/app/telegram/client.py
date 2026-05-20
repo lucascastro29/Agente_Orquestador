@@ -39,6 +39,19 @@ async def send_with_approval(
         await client.post(url, json=payload)
 
 
+async def send_voice(chat_id: str, ogg_bytes: bytes) -> None:
+    """Envía un mensaje de voz (OGG Opus) al chat."""
+    if not settings.telegram_bot_token or not ogg_bytes:
+        return
+    url = f"{_BASE}{settings.telegram_bot_token}/sendVoice"
+    async with httpx.AsyncClient(timeout=30) as client:
+        await client.post(
+            url,
+            data={"chat_id": chat_id},
+            files={"voice": ("voice.ogg", ogg_bytes, "audio/ogg")},
+        )
+
+
 async def send_security_alert(chat_id: str, event_type: str, severity: str, fragment: str) -> None:
     icon = "🚨" if severity == "critical" else "⚠️"
     text = (

@@ -510,26 +510,39 @@ class AgentRunner:
         messages: list[dict],
         tools: list[dict],
     ) -> Any:
-        """Wrapper que usa beta MCP si el agente tiene mcp_servers, o el endpoint estándar."""
+        """Wrapper que usa MCP connector (beta) si el agente tiene mcp_servers."""
         kwargs: dict[str, Any] = dict(
             model=agent.model,
             max_tokens=agent.max_tokens,
             system=system,
             messages=messages,
         )
-        if tools:
-            kwargs["tools"] = tools
 
         if agent.mcp_servers:
+            # Formato nuevo: mcp-client-2025-11-20
+            # tools locales + mcp_toolset por cada servidor MCP
+            combined_tools: list[dict] = list(tools)
+            for srv in agent.mcp_servers:
+                combined_tools.append({
+                    "type": "mcp_toolset",
+                    "mcp_server_name": srv["name"],
+                })
+            if combined_tools:
+                kwargs["tools"] = combined_tools
             try:
                 return await self.client.beta.messages.create(
                     **kwargs,
                     mcp_servers=agent.mcp_servers,
-                    betas=["mcp-client-2025-04-04"],
+                    betas=["mcp-client-2025-11-20"],
                 )
             except Exception:
-                # SDK no soporta MCP en esta versión — degradar sin MCP
-                pass
+                # Degradar: quitar mcp_toolset entries y llamar sin MCP
+                kwargs["tools"] = tools if tools else []
+
+        if tools:
+            kwargs["tools"] = tools
+        elif "tools" in kwargs:
+            del kwargs["tools"]
 
         return await self.client.messages.create(**kwargs)
 
@@ -632,11 +645,15 @@ class AgentRunner:
             # Inyectar dependencias según la tool
             if block.name in ("get_memoria", "update_memoria", "delete_memoria", "search_memoria"):
                 output = await tool.handler(self.memory_svc, **block.input)
-            elif block.name in ("run_claude_code", "get_workers_status", "cancel_worker"):
-                output = await tool.handler(self.worker_mgr, **{
-                    **block.input,
-                    **({"session_id": session_id} if block.name == "run_claude_code" and "session_id" not in block.input else {}),
-                })
+            elif block.name in ("run_claude_code", "get_workers_status", "cancel_worker", "create_subagent"):
+                kwargs = dict(block.input)
+                if block.name in ("run_claude_code", "create_subagent") and "session_id" not in kwargs:
+                    kwargs["session_id"] = session_id
+                output = await tool.handler(self.worker_mgr, **kwargs)
+            elif block.name in ("schedule_task", "list_scheduled_tasks", "delete_scheduled_task", "toggle_scheduled_task"):
+                output = await tool.handler(self.db, **block.input)
+            elif block.name == "remember_session":
+                output = await tool.handler(self.db, session_id, **block.input)
             else:
                 output = await tool.handler(**block.input)
 

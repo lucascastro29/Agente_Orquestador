@@ -236,6 +236,45 @@ class NotionTaskSync:
                 json={"properties": update},
             )
 
+    async def update_task(
+        self,
+        task_id: str,
+        status: str | None = None,
+        description: str | None = None,
+    ) -> dict:
+        """Actualiza estado y/o descripción de una tarea existente."""
+        props = await self._get_page_properties(task_id)
+        update: dict = {}
+
+        if status:
+            for name in ("Status", "Estado", "Etapa"):
+                if name in props:
+                    ptype = props[name]
+                    if ptype == "status":
+                        update[name] = {"status": {"name": status}}
+                    elif ptype == "select":
+                        update[name] = {"select": {"name": status}}
+                    break
+
+        if description:
+            for name in ("Description", "Descripción", "Notas", "Notes", "Detalle"):
+                if name in props and props[name] == "rich_text":
+                    update[name] = {"rich_text": [{"text": {"content": description[:2000]}}]}
+                    break
+
+        if not update:
+            return {"ok": False, "reason": "No se encontraron propiedades conocidas para actualizar"}
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.patch(
+                f"{_BASE}/pages/{task_id}",
+                headers=_headers(),
+                json={"properties": update},
+            )
+            resp.raise_for_status()
+
+        return {"ok": True, "task_id": task_id, "updated": list(update.keys())}
+
     async def attach_screenshot(self, task_id: str, image_bytes: bytes) -> None:
         # Solo si el usuario pidió capturas explícitamente (opt-in) — Fase 8
         raise NotImplementedError("attach_screenshot es opt-in y se implementa en Fase 8")

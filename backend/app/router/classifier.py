@@ -8,7 +8,7 @@ from app.config import settings
 ROUTER_SYSTEM = """
 Clasificás mensajes. Solo JSON, sin texto extra ni markdown.
 {
-  "category": "consulta_simple|notion_tasks|coding|admin_email|admin_calendar|analisis|arquitectura",
+  "category": "consulta_simple|notion_tasks|coding|admin_email|admin_calendar|analisis|arquitectura|tareas_programadas",
   "complexity": "low|medium|high",
   "tools_needed": [...],
   "memory_categories": [...],
@@ -20,10 +20,11 @@ Criterios de category:
 - consulta_simple: preguntas generales, cálculos, definiciones, conversación
 - notion_tasks: tareas, tableros, proyectos en Notion
 - coding: código, bugs, arquitectura de software, scripts
-- admin_email: correos, borradores, respuestas
-- admin_calendar: eventos, agenda, reuniones
+- admin_email: correos, borradores, respuestas, leer Gmail
+- admin_calendar: eventos, agenda, reuniones, leer calendario
 - analisis: análisis de datos, reportes, investigación
 - arquitectura: diseño de sistemas, decisiones técnicas de alto nivel
+- tareas_programadas: programar, agendar, automatizar tareas recurrentes, cron, recordatorios automáticos
 
 Criterios de complexity:
 - low: respuesta directa sin tools, sin contexto especial
