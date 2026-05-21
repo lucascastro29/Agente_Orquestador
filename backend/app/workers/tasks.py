@@ -123,10 +123,13 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
         if settings.anthropic_api_key:
             env["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
 
+    from app.config import settings as _settings
+    claude_model = _settings.claude_code_model
+
     proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.create_subprocess_exec(
-            "claude", "--print", prompt,
+            "claude", "--print", "--model", claude_model, prompt,
             cwd=working_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

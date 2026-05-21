@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # Chrome agent
     chrome_allowed_domains: list[str] = ["instagram.com", "linkedin.com"]
 
+    # Claude Code CLI — modelo que usa run_claude_code al invocar `claude --print`
+    claude_code_model: str = "claude-sonnet-4-6"
+
     # Security
     allowed_working_dirs: list[str] = []
     max_cost_per_session_usd: float = 5.0
