@@ -148,6 +148,16 @@ async def _handle_run_claude_code(
     notify_on_done: bool = True,
     notion_task_id: str | None = None,
 ) -> dict:
+    from app.config import settings
+    if settings.allowed_working_dirs and not any(
+        working_dir.startswith(d) for d in settings.allowed_working_dirs
+    ):
+        return {
+            "error": (
+                f"working_dir '{working_dir}' no está permitido. "
+                f"Directorios permitidos: {settings.allowed_working_dirs}"
+            )
+        }
     worker = await worker_manager.create(
         agent_id="orchestrator",
         session_id=session_id,

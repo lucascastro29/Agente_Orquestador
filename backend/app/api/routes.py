@@ -1,9 +1,13 @@
+import asyncio
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+
+_logger = logging.getLogger(__name__)
 
 from app.agents.config import get_agent
 from app.agents.runner import AgentRunner
@@ -108,15 +112,23 @@ async def chat_stream(
     runner = AgentRunner(db)
 
     async def _generate():
-        # Emitir session_id primero para que el cliente lo persista
         import json as _json
         yield f"data: {_json.dumps({'type':'session_id','session_id':session.id})}\n\n"
-        async for chunk in runner.stream_run_routed(
-            message=req.message,
-            session_id=session.id,
-            prior_messages=prior_messages,
-        ):
-            yield chunk
+        try:
+            async with asyncio.timeout(300):
+                async for chunk in runner.stream_run_routed(
+                    message=req.message,
+                    session_id=session.id,
+                    prior_messages=prior_messages,
+                ):
+                    yield chunk
+        except asyncio.TimeoutError:
+            yield f"data: {_json.dumps({'type':'error','message':'Timeout: la respuesta tardó demasiado.'})}\n\n"
+            yield f"data: {_json.dumps({'type':'done'})}\n\n"
+        except Exception as exc:
+            _logger.exception("Error en streaming de chat: %s", exc)
+            yield f"data: {_json.dumps({'type':'error','message':str(exc)[:200]})}\n\n"
+            yield f"data: {_json.dumps({'type':'done'})}\n\n"
 
     return StreamingResponse(_generate(), media_type="text/event-stream",
                               headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
@@ -126,10 +138,14 @@ async def chat_stream(
 
 @router.get("/sessions", response_model=list[SessionOut])
 async def list_sessions(
+    limit: int = 50,
+    offset: int = 0,
     _: str = Depends(require_auth),
     db: AsyncSession = Depends(get_session),
 ) -> list[SessionOut]:
-    result = await db.execute(select(DBSession).order_by(DBSession.created_at.desc()))
+    result = await db.execute(
+        select(DBSession).order_by(DBSession.created_at.desc()).limit(limit).offset(offset)
+    )
     return [_session_out(s) for s in result.scalars().all()]
 
 
@@ -254,10 +270,12 @@ async def resolve_approval(
 async def list_security_events(
     resolved: bool | None = None,
     severity: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
     _: str = Depends(require_auth),
     db: AsyncSession = Depends(get_session),
 ) -> list[SecurityEventOut]:
-    q = select(SecurityEvent).order_by(SecurityEvent.created_at.desc())
+    q = select(SecurityEvent).order_by(SecurityEvent.created_at.desc()).limit(limit).offset(offset)
     if resolved is not None:
         q = q.where(SecurityEvent.resolved == resolved)
     if severity:
@@ -386,7 +404,8 @@ async def _handle_cc_stop(db: AsyncSession, data: dict) -> dict:
                 messages=[{"role": "user", "content": transcript_excerpt[:3000]}],
             )
             summary = resp.content[0].text.strip()
-        except Exception:
+        except Exception as exc:
+            _logger.warning("Haiku summarization failed for CC stop event: %s", exc)
             summary = transcript_excerpt[:400]
 
     # Notificar por Telegram
