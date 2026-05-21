@@ -154,13 +154,14 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
             proc.kill()
         await _update_worker(worker_id, status="failed", error="Timeout (30 min)")
         await _notify_telegram(session_id, f"⏱ Worker {worker_id[:8]} cancelado por timeout.")
-    except FileNotFoundError:
-        await _update_worker(
-            worker_id,
-            status="failed",
-            error="claude CLI no encontrado en PATH. Instalá Claude Code en el container.",
-        )
-        await _notify_telegram(session_id, f"⚠️ Worker {worker_id[:8]} falló: claude CLI no disponible en este entorno.")
+    except FileNotFoundError as exc:
+        err = str(exc)
+        if "claude" in err.lower() or not working_dir:
+            msg = "claude CLI no encontrado en PATH. Instalá Claude Code en el container."
+        else:
+            msg = f"Directorio de trabajo no existe: '{working_dir}'. Verificá que la ruta sea correcta dentro del container."
+        await _update_worker(worker_id, status="failed", error=msg)
+        await _notify_telegram(session_id, f"⚠️ Worker {worker_id[:8]} falló: {msg}")
     except Exception as exc:
         await _update_worker(worker_id, status="failed", error=str(exc))
         await _notify_telegram(session_id, f"❌ Worker {worker_id[:8]} falló: {exc}")
