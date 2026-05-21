@@ -84,6 +84,8 @@ def execute_claude_code(self, worker_id: str, prompt: str, working_dir: str):
 
 
 async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: str):
+    import os
+    import shutil
     from app.db.session import CelerySessionLocal as AsyncSessionLocal
     from app.workers.manager import WorkerManager
 
@@ -95,12 +97,34 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
         notion_task_id = worker.notion_task_id
         session_id = worker.session_id
 
+    # ── Pre-flight checks ─────────────────────────────────────────────────────
+    if not os.path.isdir(working_dir):
+        msg = (
+            f"Directorio de trabajo no existe: '{working_dir}'. "
+            f"Verificá que la ruta sea correcta dentro del container "
+            f"(el workspace se monta en /workspace/)."
+        )
+        await _update_worker(worker_id, status="failed", error=msg)
+        await _notify_telegram(session_id, f"⚠️ Worker {worker_id[:8]} falló: {msg}")
+        return
+
+    if shutil.which("claude") is None:
+        msg = "claude CLI no encontrado en PATH. Instalá Claude Code en el container: npm install -g @anthropic-ai/claude-code"
+        await _update_worker(worker_id, status="failed", error=msg)
+        await _notify_telegram(session_id, f"⚠️ Worker {worker_id[:8]} falló: {msg}")
+        return
+
     await _update_worker(worker_id, status="running")
 
-    try:
-        import os
-        env = os.environ.copy()
+    # Construir env garantizando que ANTHROPIC_API_KEY esté presente
+    env = os.environ.copy()
+    if "ANTHROPIC_API_KEY" not in env:
+        from app.config import settings
+        if settings.anthropic_api_key:
+            env["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
 
+    proc: asyncio.subprocess.Process | None = None
+    try:
         proc = await asyncio.create_subprocess_exec(
             "claude", "--print", prompt,
             cwd=working_dir,
@@ -112,19 +136,20 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
         output_chunks: list[str] = []
         pending: list[str] = []
 
-        # Leer stdout línea a línea y hacer flush a DB cada 15 líneas (live view)
-        async for line_bytes in proc.stdout:
-            line = line_bytes.decode("utf-8", errors="replace")
-            output_chunks.append(line)
-            pending.append(line)
-            if len(pending) >= 15:
-                await _append_output(worker_id, "".join(pending))
-                pending = []
+        # Leer stdout línea a línea con timeout global de 30 min
+        async with asyncio.timeout(1800):
+            async for line_bytes in proc.stdout:
+                line = line_bytes.decode("utf-8", errors="replace")
+                output_chunks.append(line)
+                pending.append(line)
+                if len(pending) >= 15:
+                    await _append_output(worker_id, "".join(pending))
+                    pending = []
 
         if pending:
             await _append_output(worker_id, "".join(pending))
 
-        await asyncio.wait_for(proc.wait(), timeout=1800)
+        await proc.wait()
         stderr_data = (await proc.stderr.read()).decode("utf-8", errors="replace")
 
         output = "".join(output_chunks)
@@ -150,19 +175,13 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
         await _notify_telegram(session_id, msg)
 
     except asyncio.TimeoutError:
-        if proc.returncode is None:
+        if proc and proc.returncode is None:
             proc.kill()
         await _update_worker(worker_id, status="failed", error="Timeout (30 min)")
         await _notify_telegram(session_id, f"⏱ Worker {worker_id[:8]} cancelado por timeout.")
-    except FileNotFoundError as exc:
-        err = str(exc)
-        if "claude" in err.lower() or not working_dir:
-            msg = "claude CLI no encontrado en PATH. Instalá Claude Code en el container."
-        else:
-            msg = f"Directorio de trabajo no existe: '{working_dir}'. Verificá que la ruta sea correcta dentro del container."
-        await _update_worker(worker_id, status="failed", error=msg)
-        await _notify_telegram(session_id, f"⚠️ Worker {worker_id[:8]} falló: {msg}")
     except Exception as exc:
+        if proc and proc.returncode is None:
+            proc.kill()
         await _update_worker(worker_id, status="failed", error=str(exc))
         await _notify_telegram(session_id, f"❌ Worker {worker_id[:8]} falló: {exc}")
 
