@@ -338,6 +338,27 @@ async def cancel_worker(
     return {"ok": True}
 
 
+@router.post("/workers/{worker_id}/retry")
+async def retry_worker(
+    worker_id: str,
+    _: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Re-encola un worker pausado por falta de créditos (status=no_credits)."""
+    mgr = WorkerManager(db)
+    worker = await mgr.retry(worker_id)
+    if not worker:
+        raise HTTPException(status_code=409, detail="Worker no está en estado no_credits")
+    from app.workers import tasks as worker_tasks
+    if worker.type == "claude_code":
+        worker_tasks.execute_claude_code.delay(worker.id, worker.prompt, worker.working_dir or "")
+    elif worker.type == "subagent":
+        worker_tasks.execute_subagent.delay(
+            worker.id, worker.agent_id, worker.prompt, worker.working_dir, worker.session_id
+        )
+    return {"ok": True, "worker_id": worker.id}
+
+
 @router.post("/workers/hook")
 async def workers_hook(
     payload: dict,

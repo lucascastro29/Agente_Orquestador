@@ -45,7 +45,7 @@ class WorkerManager:
             setattr(worker, k, v)
         if status == "running" and not worker.started_at:
             worker.started_at = datetime.now(timezone.utc)
-        if status in ("done", "failed", "cancelled") and not worker.finished_at:
+        if status in ("done", "failed", "cancelled", "no_credits") and not worker.finished_at:
             worker.finished_at = datetime.now(timezone.utc)
         await self.db.commit()
         await self.db.refresh(worker)
@@ -83,6 +83,22 @@ class WorkerManager:
     async def get_by_id(self, worker_id: str) -> Worker | None:
         result = await self.db.execute(select(Worker).where(Worker.id == worker_id))
         return result.scalar_one_or_none()
+
+    async def retry(self, worker_id: str) -> "Worker | None":
+        """Resetea un worker no_credits a pending para re-encolar."""
+        result = await self.db.execute(select(Worker).where(Worker.id == worker_id))
+        worker = result.scalar_one_or_none()
+        if not worker or worker.status != "no_credits":
+            return None
+        worker.status = "pending"
+        worker.error = None
+        worker.output = None
+        worker.result_summary = None
+        worker.started_at = None
+        worker.finished_at = None
+        await self.db.commit()
+        await self.db.refresh(worker)
+        return worker
 
     async def cancel(self, worker_id: str) -> bool:
         result = await self.db.execute(select(Worker).where(Worker.id == worker_id))

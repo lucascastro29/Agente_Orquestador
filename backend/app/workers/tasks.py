@@ -6,6 +6,16 @@ from datetime import datetime, timezone
 from app.worker import celery_app
 
 
+def _is_credit_error(exc: Exception) -> bool:
+    """Detecta si el error es por saldo insuficiente en la API de Anthropic."""
+    keywords = [
+        "credit", "billing", "payment", "insufficient",
+        "balance", "quota", "exceeded your current", "too low to make",
+        "out of funds", "prepaid",
+    ]
+    return any(k in str(exc).lower() for k in keywords)
+
+
 def _run_sync(coro):
     """Ejecuta una coroutine desde contexto síncrono (Celery worker)."""
     return asyncio.run(coro)
@@ -185,8 +195,16 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
     except Exception as exc:
         if proc and proc.returncode is None:
             proc.kill()
-        await _update_worker(worker_id, status="failed", error=str(exc))
-        await _notify_telegram(session_id, f"❌ Worker {worker_id[:8]} falló: {exc}")
+        if _is_credit_error(exc):
+            await _update_worker(worker_id, status="no_credits", error=str(exc))
+            await _notify_telegram(
+                session_id,
+                f"💳 Sin créditos API — worker {worker_id[:8]} pausado.\n"
+                f"Recargá saldo en console.anthropic.com y usá <b>Retry</b> en el panel Consolas.",
+            )
+        else:
+            await _update_worker(worker_id, status="failed", error=str(exc))
+            await _notify_telegram(session_id, f"❌ Worker {worker_id[:8]} falló: {exc}")
 
 
 @celery_app.task(name="workers.run_due_scheduled_tasks")
@@ -357,7 +375,17 @@ async def _execute_subagent_async(worker_id: str, subagent_type: str, objective:
         await _notify_telegram(session_id, msg[:400])
 
     except Exception as exc:
-        err_msg = f"❌ **{subagent_type}** falló: {exc}"
-        await _update_worker(worker_id, status="failed", error=str(exc))
-        await _save_assistant_message(session_id, err_msg)
-        await _notify_telegram(session_id, err_msg)
+        if _is_credit_error(exc):
+            err_msg = f"💳 **{subagent_type}** pausado por saldo insuficiente. Recargá créditos y usá Retry."
+            await _update_worker(worker_id, status="no_credits", error=str(exc))
+            await _save_assistant_message(session_id, err_msg)
+            await _notify_telegram(
+                session_id,
+                f"💳 Sin créditos API — {subagent_type} pausado.\n"
+                f"Recargá saldo en console.anthropic.com y usá <b>Retry</b> en el panel Consolas.",
+            )
+        else:
+            err_msg = f"❌ **{subagent_type}** falló: {exc}"
+            await _update_worker(worker_id, status="failed", error=str(exc))
+            await _save_assistant_message(session_id, err_msg)
+            await _notify_telegram(session_id, err_msg)

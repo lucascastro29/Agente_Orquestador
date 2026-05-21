@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, ChevronUp, ChevronDown, Terminal, Loader2, CheckCircle2, XCircle, Clock, Pause } from "lucide-react";
+import { X, ChevronUp, ChevronDown, Terminal, Loader2, CheckCircle2, XCircle, Clock, Pause, RefreshCw, CreditCard } from "lucide-react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const TOKEN = process.env.NEXT_PUBLIC_API_TOKEN ?? "";
@@ -42,6 +42,8 @@ function StatusIcon({ status }: { status: string }) {
       return <XCircle className="w-3.5 h-3.5 text-red-400" />;
     case "cancelled":
       return <X className="w-3.5 h-3.5 text-zinc-500" />;
+    case "no_credits":
+      return <CreditCard className="w-3.5 h-3.5 text-amber-400" />;
     default:
       return <Clock className="w-3.5 h-3.5 text-zinc-500" />;
   }
@@ -54,6 +56,7 @@ const STATUS_LABEL: Record<string, string> = {
   done: "terminado",
   failed: "falló",
   cancelled: "cancelado",
+  no_credits: "sin créditos",
 };
 
 const STATUS_BG: Record<string, string> = {
@@ -63,6 +66,7 @@ const STATUS_BG: Record<string, string> = {
   done: "border-emerald-500/20 bg-emerald-500/5",
   failed: "border-red-500/30 bg-red-500/5",
   cancelled: "border-zinc-700 bg-zinc-900/20",
+  no_credits: "border-amber-500/40 bg-amber-500/5",
 };
 
 function TerminalOutput({ text, error }: { text: string | null; error: string | null }) {
@@ -89,11 +93,14 @@ function TerminalOutput({ text, error }: { text: string | null; error: string | 
 function ConsoleCard({
   worker,
   onClose,
+  onRetry,
 }: {
   worker: WorkerEntry;
   onClose: (id: string) => void;
+  onRetry: (id: string) => void;
 }) {
   const isActive = worker.status === "running" || worker.status === "pending";
+  const isNoCredits = worker.status === "no_credits";
   const borderClass = STATUS_BG[worker.status] ?? "border-zinc-700";
 
   return (
@@ -110,7 +117,7 @@ function ConsoleCard({
           <span className="text-[10px] text-zinc-500 font-mono shrink-0">{worker.id.slice(0, 6)}</span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <span className="text-[10px] text-zinc-400">
+          <span className={`text-[10px] ${isNoCredits ? "text-amber-400 font-semibold" : "text-zinc-400"}`}>
             {STATUS_LABEL[worker.status] ?? worker.status}
           </span>
           {worker.started_at && (
@@ -118,7 +125,17 @@ function ConsoleCard({
               {elapsed(worker.started_at, worker.finished_at)}
             </span>
           )}
-          {!isActive && (
+          {isNoCredits && (
+            <button
+              onClick={() => onRetry(worker.id)}
+              className="flex items-center gap-1 text-[10px] text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded px-1.5 py-0.5 transition-colors ml-1"
+              title="Reintentar cuando tengas créditos"
+            >
+              <RefreshCw className="w-3 h-3" />
+              Retry
+            </button>
+          )}
+          {!isActive && !isNoCredits && (
             <button
               onClick={() => onClose(worker.id)}
               className="text-zinc-600 hover:text-zinc-300 transition-colors ml-1 rounded p-0.5 hover:bg-zinc-800"
@@ -135,8 +152,18 @@ function ConsoleCard({
         {worker.prompt.slice(0, 120)}
       </div>
 
+      {/* No credits banner */}
+      {isNoCredits && (
+        <div className="shrink-0 px-3 py-2 flex items-center gap-2 border-b border-amber-500/20 bg-amber-500/5">
+          <CreditCard className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span className="text-[10px] text-amber-300">
+            Tarea pausada por saldo insuficiente. Recargá en console.anthropic.com y presioná Retry.
+          </span>
+        </div>
+      )}
+
       {/* Terminal */}
-      <TerminalOutput text={worker.output} error={worker.error} />
+      <TerminalOutput text={worker.output} error={isNoCredits ? null : worker.error} />
 
       {/* Running indicator */}
       {isActive && (
@@ -187,8 +214,19 @@ export function ConsolasPanel({ refreshSignal = 0, collapsed, onToggle }: Consol
     setDismissed((prev) => new Set([...prev, id]));
   }, []);
 
+  const handleRetry = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`${BASE}/api/workers/${id}/retry`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${TOKEN}` },
+      });
+      if (res.ok) load();
+    } catch { /* silencioso */ }
+  }, [load]);
+
   const visible = workers.filter((w) => !dismissed.has(w.id));
   const active = visible.filter((w) => w.status === "running" || w.status === "pending");
+  const noCredits = visible.filter((w) => w.status === "no_credits");
 
   return (
     <div
@@ -208,7 +246,13 @@ export function ConsolasPanel({ refreshSignal = 0, collapsed, onToggle }: Consol
             {active.length} activa{active.length > 1 ? "s" : ""}
           </span>
         )}
-        {visible.length > 0 && active.length === 0 && (
+        {noCredits.length > 0 && (
+          <span className="flex items-center gap-1 text-[10px] text-amber-400">
+            <CreditCard className="w-3 h-3" />
+            {noCredits.length} pausada{noCredits.length > 1 ? "s" : ""} sin créditos
+          </span>
+        )}
+        {visible.length > 0 && active.length === 0 && noCredits.length === 0 && (
           <span className="text-[10px] text-zinc-600">{visible.length} consola{visible.length > 1 ? "s" : ""}</span>
         )}
         <div className="ml-auto text-zinc-500">
@@ -231,7 +275,7 @@ export function ConsolasPanel({ refreshSignal = 0, collapsed, onToggle }: Consol
               }}
             >
               {visible.map((w) => (
-                <ConsoleCard key={w.id} worker={w} onClose={handleClose} />
+                <ConsoleCard key={w.id} worker={w} onClose={handleClose} onRetry={handleRetry} />
               ))}
             </div>
           )}
