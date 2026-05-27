@@ -992,6 +992,70 @@ async def _handle_delete_playbook(db: Any, playbook_id: str) -> dict:
     return {"ok": True, "deleted": p.name}
 
 
+async def _handle_github_create_pr(
+    repo: str,
+    title: str,
+    head: str,
+    base: str = "main",
+    body: str = "",
+) -> dict:
+    """Abre un Pull Request en GitHub via API. Requiere GITHUB_TOKEN en .env."""
+    from app.config import settings
+    if not settings.github_token:
+        return {"error": "GITHUB_TOKEN no configurado en .env — agregalo para habilitar GitHub integration."}
+    if "/" not in repo:
+        if not settings.github_username:
+            return {"error": "GITHUB_USERNAME no configurado en .env — necesario cuando repo no incluye owner (ej: 'mi-repo')."}
+        owner, repo_name = settings.github_username, repo
+    else:
+        owner, repo_name = repo.split("/", 1)
+    import httpx
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            f"https://api.github.com/repos/{owner}/{repo_name}/pulls",
+            headers={
+                "Authorization": f"Bearer {settings.github_token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            json={"title": title, "head": head, "base": base, "body": body},
+            timeout=30.0,
+        )
+    if r.status_code in (200, 201):
+        data = r.json()
+        return {
+            "ok": True,
+            "pr_url": data["html_url"],
+            "pr_number": data["number"],
+            "title": data["title"],
+            "state": data["state"],
+        }
+    return {"error": f"GitHub API {r.status_code}: {r.text[:400]}"}
+
+
+registry.register(LocalTool(
+    name="github_create_pr",
+    description=(
+        "Abre un Pull Request en GitHub. Usá después de que el sub-agente pusheó una rama. "
+        "Si repo no incluye owner (ej: 'mi-repo'), usa GITHUB_USERNAME del .env. "
+        "Formato repo: 'mi-repo' o 'owner/mi-repo'."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "repo":  {"type": "string", "description": "Nombre del repo ('mi-repo') o con owner ('owner/mi-repo')."},
+            "title": {"type": "string", "description": "Título del PR."},
+            "head":  {"type": "string", "description": "Rama con los cambios (ej: 'feat/mi-feature')."},
+            "base":  {"type": "string", "description": "Rama destino. Default: 'main'.", "default": "main"},
+            "body":  {"type": "string", "description": "Descripción del PR (markdown).", "default": ""},
+        },
+        "required": ["repo", "title", "head"],
+    },
+    handler=_handle_github_create_pr,
+    requires_confirmation=False,
+))
+
+
 registry.register(LocalTool(
     name="save_playbook",
     description=(

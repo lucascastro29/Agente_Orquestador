@@ -5,6 +5,7 @@ import { ChatWindow } from "@/components/chat/ChatWindow";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { ConsolasPanel } from "@/components/panels/ConsolasPanel";
+import { WorkerBadge } from "@/components/workers/WorkerBadge";
 
 const SESSION_KEY = "ao_session_id";
 
@@ -55,6 +56,9 @@ export default function Home() {
             {sessionId && (
               <span className="text-xs text-zinc-600 font-mono">{sessionId.slice(0, 8)}…</span>
             )}
+            <div className="ml-auto">
+              <WorkerBadge onOpen={() => setConsolasCollapsed(false)} />
+            </div>
           </header>
           <div className="flex-1 min-h-0">
             <ChatWindow

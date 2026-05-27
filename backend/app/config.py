@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     security_strict_mode: bool = True
     security_notify_level: str = "warning"
 
+    # GitHub — Personal Access Token con permisos: repo, workflow
+    github_token: str = ""
+    github_username: str = ""   # usado como owner en PRs cuando repo no incluye owner
+
     @field_validator(
         "notion_watched_boards", "allowed_working_dirs", "gmail_watched_labels",
         "chrome_allowed_domains",

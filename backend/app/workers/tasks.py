@@ -136,6 +136,15 @@ async def _execute_claude_code_async(worker_id: str, prompt: str, working_dir: s
     from app.config import settings as _settings
     claude_model = _settings.claude_code_model
 
+    # Credenciales de GitHub para que `git push` funcione dentro de claude CLI
+    if _settings.github_token:
+        import pathlib
+        pathlib.Path("/tmp/.git-credentials").write_text(
+            f"https://x-access-token:{_settings.github_token}@github.com\n",
+            encoding="utf-8",
+        )
+        env["GITHUB_TOKEN"] = _settings.github_token
+
     proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.create_subprocess_exec(

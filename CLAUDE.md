@@ -34,6 +34,7 @@ FASE 7.5: [x] Voz — hotkey Mac + audio Telegram
 FASE 8: [x] Agente Chrome
 FASE 9: [x] Tareas programadas + Gmail/Calendar activos + memoria de sesión
 FASE 10: [x] Playbooks + sub_webdev + live console streaming
+FASE 11: [x] GitHub integration + Worker SSE badge
 ```
 
 ---
@@ -339,6 +340,24 @@ analisis | arquitectura | tareas_programadas | navegacion_chrome
 
 `web_dev`: landing pages, sitios Next.js/React, frontend, animaciones → routea con tools para sub_webdev
 
+### GitHub integration (Fase 11)
+
+- `GITHUB_TOKEN` y `GITHUB_USERNAME` en `.env` y `config.py`
+- Dockerfile: instala `git`, configura `user.email`, `user.name`, `credential.helper store`
+- `tasks.py`: al lanzar Claude Code, escribe `/tmp/.git-credentials` con el token → `git push` funciona sin config extra
+- Tool `github_create_pr`: abre PR via GitHub API (httpx). Acepta `repo` sin owner (usa `GITHUB_USERNAME`) o con owner (`owner/repo`)
+- Sub-agentes `sub_webdev` y `sub_dev`: tienen `github_create_pr` en `allowed_tools` y sus prompts incluyen instrucciones de push + PR
+- Flujo estándar: trabajar en rama feature → `git push` → `github_create_pr`
+
+### Worker SSE badge (Fase 11)
+
+- Endpoint: `GET /api/workers/stream?token=...` — SSE que sondea DB cada 2s, emite solo cuando cambia el estado
+- Token via query param (EventSource del browser no soporta headers custom)
+- `WorkerBadge.tsx` — componente en el header que se conecta al SSE y muestra "● N workers activos" con animación de ping
+- Se oculta cuando `active_count === 0`, aparece automáticamente cuando hay workers corriendo
+- Al hacer click abre el ConsolasPanel
+- **Cero tokens LLM** — solo HTTP + DB
+
 ### Tools disponibles en el registry
 
 ```python
@@ -366,6 +385,9 @@ chrome_navigate, chrome_screenshot
 
 # Playbooks (Fase 10)
 save_playbook, list_playbooks, get_playbook, run_playbook, update_playbook, delete_playbook
+
+# GitHub (Fase 11)
+github_create_pr
 ```
 
 ### Categorías de memoria
@@ -527,6 +549,7 @@ GET    /api/security/events
 POST   /api/security/events/{id}/resolve
 POST   /api/security/events/{id}/retry
 GET    /api/workers
+GET    /api/workers/stream              (SSE — token via query param, cero LLM)
 POST   /api/workers/hook
 GET    /api/schedule
 GET    /api/scheduled-tasks

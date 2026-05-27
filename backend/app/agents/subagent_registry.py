@@ -130,6 +130,17 @@ def _build_sub_webdev_prompt() -> str:
                 "Si el usuario indica una URL de GitHub, primero clonás dentro del directorio permitido más apropiado. "
                 "Si no sabés cuál usar, preguntá antes de asumir.\n"
             )
+        if settings.github_token:
+            prompt += (
+                "\n# GITHUB — PUSH Y PULL REQUESTS\n\n"
+                "Tenés credenciales de GitHub configuradas. `git push` funciona directamente desde los repos.\n"
+                f"Usuario de GitHub: {settings.github_username or '(ver GITHUB_USERNAME en .env)'}\n\n"
+                "Flujo estándar al terminar una feature:\n"
+                "1. Commiteás los cambios con mensaje Conventional Commits\n"
+                "2. Pusheás la rama: `git push -u origin <rama>`\n"
+                "3. Abrís el PR con la tool `github_create_pr`\n\n"
+                "NUNCA pusheás a `main` directo — siempre trabajás en una rama feature y abrís PR.\n"
+            )
     except Exception:
         pass
     return prompt
@@ -153,6 +164,13 @@ def _build_sub_dev_prompt() -> str:
             prompt += (
                 "Usá el subdirectorio más específico que corresponda al proyecto. "
                 "Si no sabés cuál, usá el primero de la lista como base."
+            )
+        if settings.github_token:
+            prompt += (
+                "\n\nGITHUB — Tenés credenciales configuradas. `git push` funciona directamente. "
+                f"Usuario: {settings.github_username or '(ver GITHUB_USERNAME en .env)'}. "
+                "Al terminar una feature: commiteá en rama dedicada, pusheá, y abrí PR con `github_create_pr`. "
+                "Nunca pusheés a main directo."
             )
     except Exception:
         pass
@@ -188,6 +206,7 @@ SUB_AGENTS: dict[str, SubAgentConfig] = {
             # cancel_worker excluido: requires_confirmation=True pausa el loop en Celery sin forma de reanudar
             "run_claude_code", "get_workers_status",
             "get_memoria", "update_memoria", "search_memoria",
+            "github_create_pr",
         ],
         forbidden_tools=["create_subagent", "cancel_worker"],
         max_workers=5,
@@ -203,6 +222,7 @@ SUB_AGENTS: dict[str, SubAgentConfig] = {
             "run_claude_code", "get_workers_status",
             "get_memoria", "update_memoria",
             "notion_get_tasks", "notion_search", "notion_list_database", "notion_get_page",
+            "github_create_pr",
         ],
         forbidden_tools=["create_subagent", "cancel_worker"],
         max_workers=5,

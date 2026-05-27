@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Node.js LTS + Claude Code CLI
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl ca-certificates gnupg \
+    build-essential curl ca-certificates gnupg git \
     ffmpeg espeak-ng \
     # Dependencias de Chromium para Playwright
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
@@ -13,7 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g @anthropic-ai/claude-code \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --global user.email "agente@orquestador.local" \
+    && git config --global user.name "Agente Orquestador" \
+    && git config --global credential.helper "store --file /tmp/.git-credentials" \
+    && git config --global init.defaultBranch main
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \

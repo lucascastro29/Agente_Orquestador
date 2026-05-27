@@ -1,9 +1,11 @@
 import asyncio
+import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
+from sse_starlette.sse import EventSourceResponse
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -357,6 +359,52 @@ async def retry_worker(
             worker.id, worker.agent_id, worker.prompt, worker.working_dir, worker.session_id
         )
     return {"ok": True, "worker_id": worker.id}
+
+
+@router.get("/workers/stream")
+async def workers_stream(
+    request: Request,
+    token: str = Query(""),
+) -> EventSourceResponse:
+    """SSE push de estado de workers — sin LLM, cero tokens.
+    Usa token como query param porque EventSource del browser no soporta headers custom."""
+    from app.config import settings as _cfg
+    if token != _cfg.app_auth_token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    async def event_gen():
+        last_hash = ""
+        while True:
+            if await request.is_disconnected():
+                break
+            async with AsyncSessionLocal() as db:
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+                result = await db.execute(
+                    select(Worker)
+                    .where(Worker.created_at >= cutoff)
+                    .order_by(Worker.created_at.desc())
+                    .limit(30)
+                )
+                workers = result.scalars().all()
+
+            active_count = sum(
+                1 for w in workers if w.status in ("pending", "running", "waiting_input")
+            )
+            current_hash = "|".join(f"{w.id}:{w.status}" for w in workers)
+
+            if current_hash != last_hash:
+                last_hash = current_hash
+                yield {
+                    "event": "workers_update",
+                    "data": json.dumps({
+                        "active_count": active_count,
+                        "workers": [_worker_out(w).model_dump(mode="json") for w in workers],
+                    }),
+                }
+
+            await asyncio.sleep(2)
+
+    return EventSourceResponse(event_gen())
 
 
 @router.post("/workers/hook")
